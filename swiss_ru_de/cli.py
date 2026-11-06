@@ -10,10 +10,12 @@ import time
 from pathlib import Path
 
 from . import __version__
-from .config import DEFAULT_MODEL, DEFAULT_OFFLINE_MODEL, DIALECTS, MODEL_PRESETS
+from .config import (DEFAULT_DIALECT_MODEL, DEFAULT_MODEL, DEFAULT_OFFLINE_MODEL, DIALECTS,
+                     MODEL_PRESETS)
 
 EXAMPLES = """\
 examples:
+  swiss-ru-de --gui                   window: dialect as spoken on top, Russian below
   swiss-ru-de                         live: everything playing on the PC -> Russian
   swiss-ru-de --to de --overlay       live German subtitles in a floating window
   swiss-ru-de --to both               German and Russian
@@ -41,8 +43,13 @@ def build_parser() -> argparse.ArgumentParser:
     src.add_argument("--list-devices", action="store_true", help="show audio devices and exit")
 
     out = p.add_argument_group("output")
+    out.add_argument("--gui", action="store_true",
+                     help="two-pane window (top: dialect as spoken, bottom: translation); "
+                          "uses its own Settings dialog instead of the options below")
     out.add_argument("--to", choices=["ru", "de", "both"], default="ru",
                      help="output language (default: ru)")
+    out.add_argument("--dialect-text", action="store_true",
+                     help="also show the Swiss German as spoken (dialect spelling, 2nd model)")
     out.add_argument("--overlay", action="store_true", help="floating always-on-top subtitle window")
     out.add_argument("--font-size", type=int, default=22, help="overlay font size")
     out.add_argument("--save", metavar="FILE", help="also write a transcript (.srt or .txt)")
@@ -55,13 +62,15 @@ def build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--offline-model", default=DEFAULT_OFFLINE_MODEL,
                     help=f"offline translation model (default {DEFAULT_OFFLINE_MODEL})")
     tr.add_argument("--dialect", choices=list(DIALECTS), default="auto",
-                    help="optional dialect hint for the Claude translator; recognition handles "
-                         "all dialects automatically")
+                    help="optional dialect hint: improves the dialect spelling (--dialect-text) "
+                         "and the Claude translation; recognition handles all dialects anyway")
 
     asr = p.add_argument_group("speech recognition")
     asr.add_argument("--model", default=DEFAULT_MODEL,
                      help=f"preset ({', '.join(MODEL_PRESETS)}), Hugging Face repo or local folder "
                           f"(default {DEFAULT_MODEL})")
+    asr.add_argument("--dialect-model", default=DEFAULT_DIALECT_MODEL,
+                     help=f"model for --dialect-text (default {DEFAULT_DIALECT_MODEL})")
     asr.add_argument("--hint", help="names/terms that occur in the audio, e.g. 'Grindelwald, Eiger'")
     dev = asr.add_mutually_exclusive_group()
     dev.add_argument("--cpu", action="store_true", help="force CPU")
@@ -99,24 +108,34 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         return 0
 
-    from .translate import TranslationError, make_translator
+    if args.gui:
+        from .gui import run_app
 
-    try:
-        translator = make_translator(args.translator, args.to, args.claude_model,
-                                     args.offline_model, args.dialect, log=log)
-    except TranslationError as e:
-        log(str(e))
-        return 2
+        return run_app(file=args.file, url=args.url)
+
+    from .translate import TranslationError, TranslatorHub
+
+    hub = TranslatorHub(args.translator, args.claude_model, args.offline_model, args.dialect, log=log)
     if args.to != "de":
-        log(f"Translation: {translator.name}")
+        try:
+            log(f"Translation: {hub.get(args.to).name}")  # fail early, e.g. missing API key
+        except TranslationError as e:
+            log(str(e))
+            return 2
 
-    from .asr import Transcriber
+    from .asr import Transcriber, dialect_prompt
 
     device = "cpu" if args.cpu else "cuda" if args.gpu else "auto"
     live = not (args.url or args.file)
     beam = args.beam or (1 if live else 5)
     transcriber = Transcriber(args.model, device=device, compute_type=args.compute_type,
                               beam_size=beam, hint=args.hint, log=log)
+    dialect_tr = None
+    if args.dialect_text:
+        log("Loading dialect model …")
+        dialect_tr = Transcriber(args.dialect_model, device=device, compute_type=args.compute_type,
+                                 beam_size=beam, hint=args.hint, log=log,
+                                 prompt=dialect_prompt(args.dialect))
 
     sinks = [ConsolePrinter(args.to)]
     writer = TranscriptWriter(args.save, args.to) if args.save else None
@@ -138,25 +157,29 @@ def main(argv: list[str] | None = None) -> int:
         if overlay:
             overlay.status(msg)
 
+    from .pipeline import LineBook, Options
+
+    book = LineBook(on_line=on_line)
+    options = Options(target=args.to, dialect=dialect_tr is not None)
     try:
         if live:
-            return _run_live(args, transcriber, translator, on_line, on_status, overlay)
-        return _run_file(args, transcriber, translator, on_line, on_status, overlay, beam)
+            return _run_live(args, transcriber, dialect_tr, hub, book, options, on_status, overlay)
+        return _run_file(args, transcriber, dialect_tr, hub, book, options, on_status, overlay, beam)
     finally:
         if writer:
             writer.close()
             log(f"Transcript saved to {args.save}")
 
 
-def _run_live(args, transcriber, translator, on_line, on_status, overlay) -> int:
+def _run_live(args, transcriber, dialect_tr, hub, book, options, on_status, overlay) -> int:
     from .audio import SoundcardSource
     from .pipeline import LivePipeline
     from .segmenter import Segmenter
 
     source = SoundcardSource(loopback=not args.mic, device=args.device)
     segmenter = Segmenter(silence_ms=args.pause_ms, max_segment_s=args.max_seconds)
-    pipeline = LivePipeline(source, transcriber, translator, on_line, on_status,
-                            translate=args.to != "de", segmenter=segmenter).start()
+    pipeline = LivePipeline(source, transcriber, hub.get, book, on_status, options=options,
+                            segmenter=segmenter, dialect_transcriber=dialect_tr).start()
     log("Press Ctrl+C to stop." if not overlay else "Esc or double-click the subtitles to stop.")
     try:
         if overlay:
@@ -171,7 +194,7 @@ def _run_live(args, transcriber, translator, on_line, on_status, overlay) -> int
     return 1 if pipeline.error else 0
 
 
-def _run_file(args, transcriber, translator, on_line, on_status, overlay, beam) -> int:
+def _run_file(args, transcriber, dialect_tr, hub, book, options, on_status, overlay, beam) -> int:
     from .pipeline import run_file
 
     with tempfile.TemporaryDirectory(prefix="swiss-ru-de-") as tmp:
@@ -192,8 +215,8 @@ def _run_file(args, transcriber, translator, on_line, on_status, overlay, beam) 
 
         def work() -> None:
             try:
-                run_file(transcriber, translator, str(path), on_line, on_status,
-                         translate=args.to != "de", beam_size=beam, stop=stop)
+                run_file(transcriber, hub.get, str(path), book, on_status, options=options,
+                         beam_size=beam, stop=stop, dialect_transcriber=dialect_tr)
             except Exception as e:
                 on_status(f"Failed: {e}")
             finally:

@@ -14,7 +14,17 @@ import numpy as np
 from .config import SAMPLE_RATE
 
 
+def _ensure_com() -> None:
+    """Windows: make sure COM is initialised in this thread (needed for WASAPI). It is
+    harmless if it already is."""
+    if sys.platform == "win32":
+        import ctypes
+
+        ctypes.windll.ole32.CoInitializeEx(None, 0)  # COINIT_MULTITHREADED
+
+
 def _import_soundcard():
+    _ensure_com()
     try:
         import soundcard
     except Exception as e:  # no PulseAudio/WASAPI/CoreAudio available
@@ -41,6 +51,24 @@ def list_devices() -> str:
     lines.append("")
     lines.append('Pick one with --device "part of the name".')
     return "\n".join(lines)
+
+
+def device_names() -> tuple[list[str], list[str]]:
+    """(speakers, microphones) for the settings dialog; empty lists if unavailable."""
+    result: tuple[list[str], list[str]] = ([], [])
+
+    def work():  # own thread: keeps COM away from the GUI thread on Windows
+        try:
+            sc = _import_soundcard()
+            result[0].extend(s.name for s in sc.all_speakers())
+            result[1].extend(m.name for m in sc.all_microphones(include_loopback=False))
+        except Exception:
+            pass
+
+    t = threading.Thread(target=work, daemon=True)
+    t.start()
+    t.join(timeout=5)
+    return result
 
 
 class SoundcardSource:

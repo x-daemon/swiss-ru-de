@@ -11,7 +11,7 @@ def test_transcribe_options_match_faster_whisper_api():
     from faster_whisper import WhisperModel
 
     t = asr.Transcriber.__new__(asr.Transcriber)  # skip model loading
-    t.hint = "Grindelwald, Eiger"
+    t.hint, t.prompt = "Grindelwald, Eiger", asr.dialect_prompt("bern")
     sig = inspect.signature(WhisperModel.transcribe)
     sig.bind(None, np.zeros(16000, np.float32), without_timestamps=True, **t._options(1))
     sig.bind(None, "file.mp4", **t._options(5))
@@ -58,7 +58,7 @@ def test_resolve_alias_and_local_folder(tmp_path):
 
 def test_transcribe_filters_hallucinations():
     t = asr.Transcriber.__new__(asr.Transcriber)
-    t.hint, t.beam_size = None, 1
+    t.hint, t.beam_size, t.prompt = None, 1, None
     segs = [SimpleNamespace(text=" Grüezi mitenand,", no_speech_prob=0.1),
             SimpleNamespace(text=" Untertitel im Auftrag des ZDF", no_speech_prob=0.2),
             SimpleNamespace(text=" wie gohts?", no_speech_prob=0.1),

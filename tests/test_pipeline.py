@@ -6,7 +6,8 @@ import numpy as np
 
 from swiss_ru_de.config import SAMPLE_RATE
 from swiss_ru_de.output import TranscriptWriter
-from swiss_ru_de.pipeline import LivePipeline, run_file
+from swiss_ru_de.pipeline import LineBook, LivePipeline, Options, process_segment, run_file
+from swiss_ru_de.segmenter import Segment
 from swiss_ru_de.translate import Passthrough, TranslationError, Translator
 
 
@@ -36,12 +37,13 @@ class FakeSource:
 
 
 class FakeTranscriber:
-    def __init__(self):
+    def __init__(self, word="Satz"):
+        self.word = word
         self.calls = []
 
     def transcribe(self, audio):
         self.calls.append(len(audio) / SAMPLE_RATE)
-        return f"Satz {len(self.calls)}"
+        return f"{self.word} {len(self.calls)}"
 
     def transcribe_file(self, path, beam_size=5):
         for i in range(3):
@@ -59,30 +61,69 @@ class FakeRu(Translator):
         return text.replace("Satz", "Предложение")
 
 
-def run_live(audio, translator, translate=True):
-    lines, status = [], []
-    p = LivePipeline(FakeSource(audio), FakeTranscriber(), translator, lines.append,
-                     status.append, translate=translate).start()
+def run_live(audio, translator, options=None, dialect=None):
+    lines, updates, status = [], [], []
+    book = LineBook(on_update=updates.append, on_line=lines.append)
+    p = LivePipeline(FakeSource(audio), FakeTranscriber(), translator, book, status.append,
+                     options=options, dialect_transcriber=dialect).start()
     assert p.wait(10)
     p.stop()
-    return lines, status
+    return lines, updates, status
+
+
+TWO_SENTENCES = np.concatenate([silence(0.5), tone(1.2), silence(1.0), tone(1.0), silence(1.0)])
 
 
 def test_live_pipeline_end_to_end():
-    audio = np.concatenate([silence(0.5), tone(1.2), silence(1.0), tone(1.0), silence(1.0)])
     tr = FakeRu()
-    lines, status = run_live(audio, tr)
+    lines, _, status = run_live(TWO_SENTENCES, tr)
     assert [l.german for l in lines] == ["Satz 1", "Satz 2"]
     assert [l.translation for l in lines] == ["Предложение 1", "Предложение 2"]
     assert tr.contexts == [[], ["Satz 1"]]  # previous line passed as context
     assert lines[0].start < lines[1].start
+    assert all(l.dialect is None for l in lines)
     assert "Listening to fake" in status
 
 
-def test_live_pipeline_german_only_skips_translation():
-    audio = np.concatenate([tone(1.0), silence(1.0)])
-    lines, _ = run_live(audio, Passthrough(), translate=False)
+def test_dialect_line_and_partial_updates():
+    lines, updates, _ = run_live(TWO_SENTENCES, FakeRu(), Options(dialect=True),
+                                 dialect=FakeTranscriber("Satzli"))
+    assert [l.dialect for l in lines] == ["Satzli 1", "Satzli 2"]
+    assert [l.translation for l in lines] == ["Предложение 1", "Предложение 2"]
+    first = [u for u in updates if u.id == lines[0].id]
+    assert first[0].translation_pending and first[0].dialect_pending  # shown immediately
+    assert first[-1].done and len(first) == 3  # then filled in twice
+
+
+def test_dialect_transcriber_ignored_when_option_off():
+    lines, _, _ = run_live(TWO_SENTENCES, FakeRu(), Options(dialect=False),
+                           dialect=FakeTranscriber("Satzli"))
+    assert all(l.dialect is None and l.done for l in lines)
+
+
+def test_german_only_skips_translation():
+    lines, _, _ = run_live(np.concatenate([tone(1.0), silence(1.0)]), FakeRu(), Options(target="de"))
     assert len(lines) == 1 and lines[0].translation is None
+
+
+def test_target_can_change_while_running():
+    options = Options(target="ru")
+    translators = {"ru": FakeRu(), "de": Passthrough()}
+    seen = []
+    book = LineBook(on_line=seen.append)
+    p = LivePipeline(FakeSource(silence(0.1)), FakeTranscriber(), lambda t: translators[t], book,
+                     lambda s: None, options=options)
+    p.worker.start()
+    process_segment(0, 1, tone(1), p.transcriber, None, book, p.worker, options.target, print)
+    options.target = "de"
+    process_segment(1, 2, tone(1), p.transcriber, None, book, p.worker, options.target, print)
+    p.worker.close()
+    assert [l.translation for l in seen] == ["Предложение 1", None]
+
+
+def test_paused_audio_is_dropped():
+    lines, _, _ = run_live(TWO_SENTENCES, FakeRu(), Options(paused=True))
+    assert lines == []
 
 
 def test_translation_errors_do_not_stop_subtitles():
@@ -90,16 +131,14 @@ def test_translation_errors_do_not_stop_subtitles():
         def translate(self, text, context=()):
             raise TranslationError("no key")
 
-    audio = np.concatenate([tone(1.0), silence(1.0), tone(1.0), silence(1.0)])
-    lines, status = run_live(audio, Broken())
+    lines, _, status = run_live(TWO_SENTENCES, Broken())
     assert len(lines) == 2 and all(l.translation == "" for l in lines)
     assert sum("no key" in s for s in status) == 1  # reported once, not per line
 
 
 def test_backlog_is_merged_into_one_window():
-    p = LivePipeline(FakeSource(silence(0.1)), FakeTranscriber(), Passthrough(),
-                     lambda l: None, lambda s: None)
-    from swiss_ru_de.segmenter import Segment
+    p = LivePipeline(FakeSource(silence(0.1)), FakeTranscriber(), Passthrough(), LineBook(),
+                     lambda s: None)
     for i in range(4):
         p.segments.put(Segment(i * 8.0, i * 8.0 + 7.0, tone(7.0)))
     batch, done = p._next_batch()
@@ -117,12 +156,22 @@ def test_run_file_writes_srt(tmp_path):
         lines.append(line)
         writer(line)
 
-    run_file(FakeTranscriber(), FakeRu(), "dummy.wav", sink, lambda s: None)
+    run_file(FakeTranscriber(), FakeRu(), "dummy.wav", LineBook(on_line=sink), lambda s: None)
     writer.close()
     text = out.read_text(encoding="utf-8")
     assert len(lines) == 3
     assert "1\n00:00:00,000 --> 00:00:01,500\nSatz 1\nПредложение 1\n" in text
     assert text.count("-->") == 3
+
+
+def test_run_file_with_dialect_uses_matching_audio_slices():
+    dialect = FakeTranscriber("Satzli")
+    lines = []
+    run_file(FakeTranscriber(), FakeRu(), "x.wav", LineBook(on_line=lines.append), lambda s: None,
+             options=Options(dialect=True), dialect_transcriber=dialect,
+             load_audio=lambda path: silence(10))
+    assert [l.dialect for l in lines] == ["Satzli 1", "Satzli 2", "Satzli 3"]
+    assert dialect.calls == [1.5, 1.5, 1.5]  # each segment's own 1.5 s of audio
 
 
 def test_run_file_can_be_stopped():
@@ -139,5 +188,6 @@ def test_run_file_can_be_stopped():
                 yield SimpleNamespace(start=i, end=i + 1, text=f"Satz {i}")
                 stop.wait(1)
 
-    run_file(Slow(), Passthrough(), "x", sink, lambda s: None, translate=False, stop=stop)
+    run_file(Slow(), Passthrough(), "x", LineBook(on_line=sink), lambda s: None,
+             options=Options(target="de"), stop=stop)
     assert len(lines) < 100

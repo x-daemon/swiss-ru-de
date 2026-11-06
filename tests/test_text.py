@@ -35,11 +35,11 @@ def test_clean_text_collapses_loops_and_spaces():
 
 
 def test_line_texts():
-    line = Line(0, 1, "Guten Tag", "Добрый день")
+    line = Line(0, 0, 1, "Guten Tag", translation="Добрый день")
     assert line_texts(line, "ru") == ["Добрый день"]
     assert line_texts(line, "both") == ["Guten Tag", "Добрый день"]
     assert line_texts(line, "de") == ["Guten Tag"]
-    assert line_texts(Line(0, 1, "Hallo", ""), "ru") == ["(Hallo)"]  # translation failed
+    assert line_texts(Line(1, 0, 1, "Hallo", translation=""), "ru") == ["(Hallo)"]  # failed
 
 
 def test_time_formats():

@@ -3,9 +3,19 @@
 Live **Swiss German → Russian / German** subtitles for anything you hear on your PC:
 Teams or Zoom calls, YouTube, SRF Play, podcasts, or audio and video files.
 
+![Window with the Swiss German as spoken on top and the Russian translation below (example text)](docs/window.png)
+
+The window has two parts:
+
+* **Top: Schwiizerdütsch as spoken.** What the speaker said, written in dialect.
+* **Bottom: the translation.** Russian or Standard German; you choose in **Settings**.
+
+Each sentence shows up in both parts on the same row, with the same time stamp. Drag the bar
+between the parts to resize them.
+
 ```
-PC audio ─► pause detection ─► Whisper fine-tuned on Swiss German ─► Standard German ─► Russian
-(Teams, YouTube, …)                (all dialects)                       (--to de)         (--to ru)
+PC audio ─► pause detection ─┬► Whisper fine-tuned on Swiss German ─► Standard German ─► Russian   (bottom)
+(Teams, YouTube, …)          └► Whisper + dialect style prompt ─────► dialect as spoken           (top)
 ```
 
 * **Dialects.** The default speech model is Whisper large-v3-turbo fine-tuned on Swiss German.
@@ -16,14 +26,14 @@ PC audio ─► pause detection ─► Whisper fine-tuned on Swiss German ─►
   On an NVIDIA GPU a sentence should appear about a second after the speaker pauses; on a modern
   CPU expect a few seconds. If the computer falls behind, waiting sentences are joined and
   recognised together, so it catches up.
-* **Simple.** One command. You can show the subtitles in a floating window that stays on top of
-  other windows, or save them as `.srt` or `.txt`.
+* **Simple.** Double-click to start. Besides the two-part window, there is a compact
+  always-on-top subtitle strip (`--overlay`), terminal output, and `.srt` or `.txt` export.
 
 ## Install
 
 **Windows:** install [Python 3.10+](https://www.python.org/downloads/) and tick *"Add python.exe
 to PATH"*. Then double-click **`start-windows.bat`**. The first start installs everything and
-downloads the models (a few GB, once). After that, the subtitle window opens and shows
+downloads the models (a few GB, once). After that, the two-part window opens and shows
 whatever your PC is playing.
 
 **Manual install (Windows, Linux, macOS):**
@@ -34,10 +44,34 @@ python -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\a
 pip install -e ".[all]"      # or only what you need: ".[claude]", ".[deepl]", ".[offline]"
 ```
 
-## Use
+## The window
+
+```bash
+swiss-ru-de --gui                    # or: swiss-ru-de-gui (no console window), start-windows.bat
+swiss-ru-de --gui --url "https://www.youtube.com/watch?v=..."   # a whole video in the window
+```
+
+| Button / key | What it does |
+|---|---|
+| **Settings** (Ctrl+,) | Choose the bottom part: **Русский** or **Hochdeutsch**. Choose the top part: dialect as spoken, or Standard German. Also: dialect hint, translator, which speaker, microphone or headset to listen to, font size, always on top, speech model. Settings are saved and apply immediately. Only the speech model and the GPU/CPU choice need a restart. |
+| **Pause** (Space) | Ignore audio for a moment, e.g. during a private side conversation. |
+| **Save…** (Ctrl+S) | Export everything to `.srt` subtitles or `.txt`. |
+| **Clear** (Ctrl+L) | Empty both parts. |
+| Ctrl + / Ctrl − | Change the font size. |
+
+**How the dialect line works.** The Swiss German speech models are trained to write Standard
+German, so the top part uses a second model. It is plain Whisper, guided by a short example text
+written in the chosen dialect (for example Bärndütsch for `bern`, Baseldytsch for `basel`), so
+that it writes what it hears the same way. Swiss German has no fixed spelling, so the top line is
+an approximation of what was said. The bottom line (meaning, translation) comes from the Swiss
+German model. On CPU-only PCs, the second model roughly doubles the work. If the PC can't keep
+up, set the top part to *Standard German*.
+
+## Command line
 
 ```bash
 swiss-ru-de                          # everything playing on the PC -> Russian, in the terminal
+swiss-ru-de --dialect-text           # ... with the dialect as spoken above each line
 swiss-ru-de --overlay                # ... in a floating subtitle window
 swiss-ru-de --to de                  # Standard German only (no translation, fastest)
 swiss-ru-de --to both --overlay      # German (small) + Russian (large)
@@ -79,8 +113,9 @@ swiss-ru-de --to both --dialect berner-oberland
 
 ## Dialects and accuracy tips
 
-* All dialects are recognised automatically. `--dialect bern|berner-oberland|basel|zurich|wallis|…`
-  is only an optional hint for the Claude translator.
+* All dialects are recognised automatically. The dialect setting (`--dialect bern|berner-oberland|basel|zurich|wallis|…`)
+  is an optional hint. It sets the spelling style of the dialect line and gives the Claude
+  translator context.
 * **Highest Alemannic** dialects (Bernese Oberland, e.g. Grindelwald, and Valais) are the hardest
   for every model. For these, try `--model swiss-large` (slower, often more accurate) and
   `--beam 5`.
@@ -132,12 +167,14 @@ pip install -e ".[dev,claude,deepl]"
 pytest
 ```
 
-Code layout: `audio.py` (capture), `segmenter.py` (pause detection), `asr.py` (faster-whisper),
-`translate.py` (Claude / DeepL / offline), `pipeline.py` (threads), `output.py` / `overlay.py` (display).
+Code layout: `audio.py` (capture), `segmenter.py` (pause detection), `asr.py` (faster-whisper,
+dialect prompts), `translate.py` (Claude / DeepL / offline), `pipeline.py` (threads),
+`gui.py` (two-part window and settings), `settings.py`, `output.py` / `overlay.py` (display).
 
-**Status (v0.1):** the full pipeline is covered by tests that use simulated audio and a simulated
-model. It has not yet been benchmarked on real Swiss German recordings. Feedback per dialect is
-welcome.
+**Status (v0.2):** the full pipeline is covered by tests that use simulated audio and a simulated
+model. The window was checked on a virtual display. It has not yet been benchmarked on real Swiss
+German recordings, and how well the dialect line follows each dialect is untested. Feedback per
+dialect is welcome.
 
 ---
 
@@ -149,7 +186,8 @@ welcome.
 
 1. Установите Python 3.10+ (отметьте «Add python.exe to PATH»).
 2. Запустите `start-windows.bat`. Первый запуск устанавливает программу и скачивает модели (несколько ГБ).
-3. Появится окно с субтитрами поверх всех окон. Чтобы закрыть его, нажмите Esc или дважды щёлкните по нему.
+3. Откроется окно из двух частей. Сверху: швейцарский немецкий, как его произнесли (на диалекте).
+   Снизу: перевод на русский или литературный немецкий; выбор в **Settings**.
 
 Для лучшего перевода задайте ключ `ANTHROPIC_API_KEY` (Claude) или `DEEPL_AUTH_KEY` (DeepL).
 Без ключа работает офлайн-перевод.

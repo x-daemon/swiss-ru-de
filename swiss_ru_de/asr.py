@@ -44,6 +44,46 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 
+def _echoes_prompt(text: str, prompt: str) -> bool:
+    """On silence Whisper sometimes just repeats its prompt."""
+    norm = lambda t: re.sub(r"[^\w ]", "", t.lower()).strip()
+    t = norm(text)
+    return len(t) > 3 and t in norm(prompt)
+
+
+# Style prompts that make plain Whisper write what it hears in dialect spelling instead of
+# Standard German (Whisper imitates the writing style of its prompt). Spelling of Swiss
+# German is not standardised, so the output is an approximation of what was said.
+DIALECT_PROMPTS = {
+    "auto": "Grüezi mitenand. Hüt isch es schöns Wätter, mir gönd am Namittag no chli go "
+            "laufe. Weisch, das han i nöd gwüsst.",
+    "zurich": "Grüezi mitenand. Hüt isch es schöns Wätter, mir gönd am Namittag no chli go "
+              "laufe. Weisch, das han i nöd gwüsst.",
+    "bern": "Grüessech mitenand. Hüt isch es schöns Wätter, mir göh am Namittag no chli ga "
+            "loufe. Weisch, das hani nid gwüsst.",
+    "berner-oberland": "Grüessech zäme. Hiitu ischt es schöns Wätter, mier gange am Namittag "
+                       "no chli ga loufe. Weischt, das han i nid gwisst.",
+    "basel": "Grüezi mitenand. Hüt isch e scheens Wätter, mir gönge am Nomidaag no e bitz go "
+             "spaziere. Waisch, das hani nit gwüsst.",
+    "wallis": "Grüessu zäme. Hiitu ischt schens Wätter, wier gän am Namittag no as bitzji ga "
+              "loufu. Weischt, das hani nit gwisst.",
+    "luzern": "Grüezi mitenand. Hött esch es schöns Wätter, mer gönd am Nomittag no chli go "
+              "laufe. Wäisch, das hani ned gwüsst.",
+    "ostschweiz": "Grüezi mitenand. Hüt isch es schöös Wetter, mir gönd am Namittag no chli go "
+                  "laufe. Weisch, da han i nöd gwüsst.",
+    "graubuenden": "Grüezi mitanand. Hüt isch as schöns Wätter, miar gönd am Namitag no a bitz "
+                   "go laufa. Weisch, das han i nid gwüsst.",
+    "aargau": "Grüezi mitenand. Hüt isch es schöns Wätter, mer gönd am Namittag no chli go "
+              "laufe. Weisch, das hani ned gwüsst.",
+    "solothurn": "Grüessech mitenand. Hüt isch es schöns Wätter, mir göi am Namittag no chli go "
+                 "laufe. Weisch, das hani nid gwüsst.",
+}
+
+
+def dialect_prompt(dialect: str | None) -> str:
+    return DIALECT_PROMPTS.get(dialect or "auto", DIALECT_PROMPTS["auto"])
+
+
 @dataclass
 class TextSegment:
     start: float
@@ -128,11 +168,13 @@ class Transcriber:
         beam_size: int = 1,
         hint: str | None = None,
         log: Log = print,
+        prompt: str | None = None,
     ):
         from faster_whisper import WhisperModel
 
         self.beam_size = beam_size
         self.hint = hint or None
+        self.prompt = prompt  # style prompt; used by the dialect transcriber
         self.log = log
         self.device = pick_device(device)
         compute_type = compute_type or ("float16" if self.device == "cuda" else "int8")
@@ -175,6 +217,7 @@ class Transcriber:
             log_prob_threshold=-1.0,
             compression_ratio_threshold=2.4,
             hotwords=self.hint,
+            initial_prompt=self.prompt,
         )
 
     def transcribe(self, audio: np.ndarray) -> str:
@@ -184,7 +227,9 @@ class Transcriber:
         )
         parts = [clean_text(s.text) for s in segments if s.no_speech_prob < 0.8]
         text = clean_text(" ".join(p for p in parts if not is_hallucination(p)))
-        return "" if is_hallucination(text) else text
+        if is_hallucination(text) or (self.prompt and _echoes_prompt(text, self.prompt)):
+            return ""
+        return text
 
     def transcribe_file(self, path: str, beam_size: int = 5) -> Iterator[TextSegment]:
         """Transcribe a whole audio/video file, yielding sentences as they are ready."""

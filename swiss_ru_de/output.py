@@ -54,12 +54,14 @@ def srt_time(seconds: float) -> str:
 
 
 def line_texts(line: Line, target: str) -> list[str]:
-    """What to show for a line: target ru -> Russian, de -> German, both -> both."""
+    """What to show for a line: target ru -> Russian, de -> German, both -> both.
+    The dialect "as spoken" line, if there is one, comes first."""
+    head = [line.dialect] if line.dialect else []
     if target == "de" or line.translation is None:
-        return [line.german]
+        return head + [line.german]
     if target == "both":
-        return [line.german, line.translation or "…"]
-    return [line.translation or f"({line.german})"]
+        return head + [line.german, line.translation or "…"]
+    return head + [line.translation or f"({line.german})"]
 
 
 class ConsolePrinter:
@@ -75,19 +77,20 @@ class ConsolePrinter:
     def __call__(self, line: Line) -> None:
         texts = line_texts(line, self.target)
         stamp = f"{self.dim}[{clock(line.start)}]{self.reset}"
+        indent = " " * (len(clock(line.start)) + 2)
         with self._lock:
-            if len(texts) == 2:
-                print(f"{stamp} {self.dim}{texts[0]}{self.reset}", file=self.stream)
-                print(f"{' ' * (len(clock(line.start)) + 2)} {self.bold}{texts[1]}{self.reset}",
-                      file=self.stream, flush=True)
-            else:
-                print(f"{stamp} {self.bold}{texts[0]}{self.reset}", file=self.stream, flush=True)
+            for i, text in enumerate(texts):
+                style = self.bold if i == len(texts) - 1 else self.dim
+                prefix = stamp if i == 0 else indent
+                print(f"{prefix} {style}{text}{self.reset}", file=self.stream)
+            self.stream.flush()
 
 
 class TranscriptWriter:
-    """Appends every line to a .srt (subtitles) or plain text file as it arrives."""
+    """Appends every line to a .srt (subtitles) or plain text file as it arrives.
+    ``target=None`` uses each line's own target (it can change while running)."""
 
-    def __init__(self, path: str, target: str):
+    def __init__(self, path: str, target: str | None):
         self.path = Path(path)
         self.srt = self.path.suffix.lower() == ".srt"
         self.target = target
@@ -96,7 +99,7 @@ class TranscriptWriter:
         self.f = self.path.open("w", encoding="utf-8")
 
     def __call__(self, line: Line) -> None:
-        texts = line_texts(line, self.target)
+        texts = line_texts(line, self.target or line.target)
         with self._lock:
             self.n += 1
             if self.srt:

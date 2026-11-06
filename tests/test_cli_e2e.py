@@ -4,7 +4,6 @@ import numpy as np
 import pytest
 
 from swiss_ru_de import asr, audio, cli
-from swiss_ru_de.config import SAMPLE_RATE
 
 from .test_pipeline import FakeSource, FakeTranscriber, silence, tone
 

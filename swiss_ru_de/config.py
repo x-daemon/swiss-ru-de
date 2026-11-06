@@ -21,6 +21,10 @@ MODEL_PRESETS = {
 DEFAULT_MODEL = "swiss-turbo"
 FALLBACK_MODEL = "large-v3-turbo"
 
+# Second model for the "as spoken" dialect line. The Swiss fine-tunes always write
+# Standard German, so plain Whisper is used with a dialect-style prompt instead.
+DEFAULT_DIALECT_MODEL = "turbo"
+
 # Offline (no API key) German -> Russian translation model.
 DEFAULT_OFFLINE_MODEL = "facebook/nllb-200-distilled-600M"
 

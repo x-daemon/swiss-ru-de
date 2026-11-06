@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 from typing import Sequence
 
 from .config import DEFAULT_OFFLINE_MODEL, DIALECTS
@@ -194,3 +195,32 @@ def make_translator(
     if kind == "offline":
         return OfflineTranslator(model=offline_model, log=log)
     raise ValueError(f"unknown translator {kind!r}")
+
+
+class TranslatorHub:
+    """Creates translators lazily and keeps them, so the GUI can switch translator,
+    dialect or target language while running. ``get`` is called from the translation
+    thread, so slow model loading never blocks the window."""
+
+    def __init__(self, kind: str = "auto", claude_model: str | None = None,
+                 offline_model: str | None = None, dialect: str | None = None, log=print):
+        self.config = dict(kind=kind, claude_model=claude_model or None,
+                           offline_model=offline_model, dialect=dialect)
+        self.log = log
+        self._cache: dict[tuple, Translator] = {}
+        self._lock = threading.Lock()
+
+    def configure(self, **changes) -> None:
+        with self._lock:
+            self.config.update(changes)
+
+    def get(self, target: str) -> Translator:
+        if target == "de":
+            return Passthrough()
+        with self._lock:
+            key = tuple(sorted(self.config.items()))
+            if key not in self._cache:
+                c = self.config
+                self._cache[key] = make_translator(c["kind"], target, c["claude_model"],
+                                                   c["offline_model"], c["dialect"], log=self.log)
+            return self._cache[key]

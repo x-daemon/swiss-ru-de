@@ -1,6 +1,7 @@
 @echo off
 rem One-click start on Windows. First run installs everything into .venv (takes a few minutes).
-rem Any arguments are passed through, e.g.:  start-windows.bat --to both --overlay
+rem Opens the two-pane window. Any arguments are passed to the command line tool instead,
+rem e.g.:  start-windows.bat --to both --overlay
 cd /d "%~dp0"
 
 if not exist ".venv\Scripts\swiss-ru-de.exe" (
@@ -11,7 +12,7 @@ if not exist ".venv\Scripts\swiss-ru-de.exe" (
 )
 
 if "%~1"=="" (
-    ".venv\Scripts\swiss-ru-de.exe" --overlay
+    ".venv\Scripts\swiss-ru-de.exe" --gui
 ) else (
     ".venv\Scripts\swiss-ru-de.exe" %*
 )

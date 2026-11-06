@@ -76,7 +76,7 @@ class Overlay:
                         self.small.config(text=item)
                     else:
                         texts = line_texts(item, self.target)
-                        self.small.config(text=texts[0] if len(texts) == 2 else "")
+                        self.small.config(text=texts[-2] if len(texts) >= 2 else "")
                         self.main.config(text=texts[-1])
                     self._fit()
             except queue.Empty:
