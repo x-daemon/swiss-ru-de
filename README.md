@@ -166,7 +166,21 @@ recogniser.
 With Azure, the dialect line (top) still comes from the local model. It is filled in when the
 CPU has time; until then the top shows the Standard German, dimmed.
 
-**On this PC, recognition is tuned like this:**
+**On this PC (no cloud) it tunes itself.** At start it times one pass of the speech model,
+which costs the same for every sentence (a 30 s window). Live mode then picks:
+
+| Time per pass | Mode | What changes |
+|---|---|---|
+| ≤ 1 s (GPU) | precise | wider search (beam 5), dialect line on, segments from 2 s |
+| 1–2.5 s | balanced | dialect line only when idle, segments ≥ 2× the pass time |
+| > 2.5 s (slow CPU) | fast | dialect line paused (it would double the work and hold up the next sentence), segments of 2× the pass time (max 8 s), so recognition keeps up |
+
+Force a mode in *Settings → Speed* (or `--speed fast|precise`). *Settings → Check this PC…*
+or `swiss-ru-de --benchmark` shows the processor, the graphics card, the measured time per
+pass, and what would make this PC faster. For example, an NVIDIA card whose CUDA libraries
+are missing.
+
+**Further details:**
 
 * Short utterances are joined (at least ~3 s, up to a 1.5 s pause). Whisper is more precise
   with more context, and every recognition pass costs the same 30 s window, so this is also
@@ -239,6 +253,11 @@ dialect is welcome.
    5 бесплатных часов в месяц). Текст появляется прямо во время речи.
 2. Ключ **Claude** или **DeepL** в *Settings*. Без ключа используется офлайн-перевод,
    а он переводит дословно и с ошибками.
+
+Полностью локально, без облака, программа сама подстраивается под скорость компьютера.
+*Settings → Check this PC…* показывает процессор, видеокарту и замеренную скорость, а также
+что ускорит работу именно на этом компьютере. Самое большое ускорение (примерно в 10 раз)
+даёт видеокарта NVIDIA.
 
 ## License
 

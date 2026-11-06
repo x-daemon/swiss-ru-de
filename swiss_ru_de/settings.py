@@ -25,6 +25,7 @@ class Settings:
     dialect_model: str = DEFAULT_DIALECT_MODEL  # applies at next start
     compute: str = "auto"  # auto | cpu | cuda, applies at next start
     recognizer: str = "local"  # "local" (Whisper on this PC) or "azure" (cloud, de-CH)
+    speed: str = "auto"  # auto | fast | precise - see tuning.py
     azure_region: str = "switzerlandnorth"
     claude_model: str = ""
     offline_model: str = DEFAULT_OFFLINE_MODEL

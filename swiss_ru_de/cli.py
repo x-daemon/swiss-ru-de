@@ -41,6 +41,8 @@ def build_parser() -> argparse.ArgumentParser:
                      help="use a microphone / virtual input instead of the PC speaker output")
     src.add_argument("--device", help="speaker (or with --mic: input) name or part of it")
     src.add_argument("--list-devices", action="store_true", help="show audio devices and exit")
+    src.add_argument("--benchmark", action="store_true",
+                     help="measure the speech model on this PC, show hardware and advice, exit")
 
     out = p.add_argument_group("output")
     out.add_argument("--gui", action="store_true",
@@ -66,6 +68,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "and the Claude translation; recognition handles all dialects anyway")
 
     asr = p.add_argument_group("speech recognition")
+    asr.add_argument("--speed", choices=["auto", "fast", "precise"], default="auto",
+                     help="auto (default): tuned to the measured speed of this PC; fast: no "
+                          "dialect line, longer segments; precise: dialect line, wider search")
     asr.add_argument("--recognizer", choices=["local", "azure"], default="local",
                      help="local = Whisper on this PC (default); azure = Azure AI Speech de-CH "
                           "in the cloud (fast, needs AZURE_SPEECH_KEY; live audio only)")
@@ -87,9 +92,9 @@ def build_parser() -> argparse.ArgumentParser:
                      help="pause that ends a sentence in live mode (default 600)")
     asr.add_argument("--max-seconds", type=float, default=15.0,
                      help="longest live segment before it is cut (default 15)")
-    asr.add_argument("--min-seconds", type=float, default=3.0,
+    asr.add_argument("--min-seconds", type=float, default=None,
                      help="join shorter utterances with the next one: more context, more "
-                          "precise and fewer passes (default 3, 0 = off)")
+                          "precise and fewer passes (default: from --speed, 0 = off)")
 
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return p
@@ -121,6 +126,9 @@ def main(argv: list[str] | None = None) -> int:
 
         return run_app(file=args.file, url=args.url)
 
+    if args.benchmark:
+        return _benchmark(args)
+
     from .translate import TranslationError, TranslatorHub
 
     hub = TranslatorHub(args.translator, args.claude_model, args.offline_model, args.dialect, log=log)
@@ -138,9 +146,24 @@ def main(argv: list[str] | None = None) -> int:
     cloud = live and args.recognizer == "azure"
     beam = args.beam or (None if live else 5)
     transcriber = None
+    tuning = None
     if not cloud:
         transcriber = Transcriber(args.model, device=device, compute_type=args.compute_type,
                                   beam_size=beam, hint=args.hint, log=log)
+        if live:
+            from .tuning import choose
+
+            tuning = choose(args.speed, transcriber.pass_seconds, transcriber.device)
+            if args.beam is None:
+                transcriber.beam_size = tuning.beam
+            if args.min_seconds is None:
+                args.min_seconds = tuning.min_segment_s
+            log(tuning.describe(transcriber.pass_seconds))
+            if args.dialect_text and not tuning.dialect:
+                log("--dialect-text is paused: too slow on this PC (use --speed precise to force it).")
+                args.dialect_text = False
+    if args.min_seconds is None:
+        args.min_seconds = 3.0
     dialect_tr = None
     if args.dialect_text:
         log("Loading dialect model …")
@@ -206,6 +229,19 @@ def _run_live(args, transcriber, dialect_tr, hub, book, options, on_status, over
     finally:
         pipeline.stop()
     return 1 if pipeline.error else 0
+
+
+def _benchmark(args) -> int:
+    from .asr import Transcriber
+    from .tuning import choose, report
+
+    device = "cpu" if args.cpu else "cuda" if args.gpu else "auto"
+    log("Loading the speech model and timing it …")
+    tr = Transcriber(args.model, device=device, compute_type=args.compute_type, log=log)
+    for line in report(tr.pass_seconds, tr.device):
+        print(line)
+    print("Live mode (--speed auto): " + choose("auto", tr.pass_seconds, tr.device).describe(tr.pass_seconds))
+    return 0
 
 
 def _run_cloud(args, dialect_tr, hub, book, options, on_status, overlay) -> int:

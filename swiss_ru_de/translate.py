@@ -239,8 +239,12 @@ class OfflineTranslator(Translator):
             TransformersConverter(self.model_name).convert(str(tmp), quantization="int8", force=True)
             shutil.rmtree(out, ignore_errors=True)
             tmp.rename(out)
+        from .asr import pick_device
+
+        device = pick_device("auto")  # NVIDIA GPU if usable: translation in a few ms
         threads = max(1, min(4, (os.cpu_count() or 4) // 4))
-        return ctranslate2.Translator(str(out), device="cpu", compute_type="int8",
+        return ctranslate2.Translator(str(out), device=device,
+                                      compute_type="int8_float16" if device == "cuda" else "int8",
                                       inter_threads=1, intra_threads=threads)
 
     def _load_torch(self) -> None:

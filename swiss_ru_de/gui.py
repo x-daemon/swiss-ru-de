@@ -146,6 +146,7 @@ class App:
         self._dialect_lock = threading.Lock()
         self._fatal = False
         self._needs_restart = False
+        self.tuning = None  # set once the local model has been timed (tuning.py)
         self._build()
         threading.Thread(target=self._startup, args=(file, url), daemon=True).start()
         self.root.after(80, self._poll)
@@ -324,7 +325,10 @@ class App:
         except OSError as e:
             self.status(f"Could not save settings: {e}")
         self.options.target = new.target
-        self.options.dialect = new.top == "dialect"
+        if new.speed != old.speed and self.transcriber is not None:
+            self._apply_tuning()
+            self._needs_restart = True  # new segment length
+        self.options.dialect = self._dialect_wanted()
         if (new.translator, new.dialect, new.claude_model) != (old.translator, old.dialect, old.claude_model):
             self.hub.configure(kind=new.translator, dialect=new.dialect,
                                claude_model=new.claude_model or None)
@@ -375,10 +379,33 @@ class App:
 
             self.status("Loading speech model … (the first start downloads about 1.6 GB)")
             self.transcriber = Transcriber(self.s.model, device=self.s.compute, log=self.status)
-            return True
         except Exception as e:
             self.events.put(("fatal", f"Could not load the speech model:\n{e}"))
             return False
+        self._apply_tuning()
+        return True
+
+    def _dialect_wanted(self) -> bool:
+        if self.s.top != "dialect":
+            return False
+        if self.s.recognizer == "azure" or self.tuning is None:
+            return True  # with Azure the CPU is free for the dialect line
+        return self.tuning.dialect
+
+    def _apply_tuning(self) -> None:
+        """Adapt live recognition to the measured speed of this PC."""
+        from .tuning import choose, report
+
+        tr = self.transcriber
+        self.tuning = choose(self.s.speed, tr.pass_seconds, tr.device)
+        tr.beam_size = self.tuning.beam
+        self.options.dialect = self._dialect_wanted()
+        message = self.tuning.describe(tr.pass_seconds)
+        if self.s.top == "dialect" and not self.tuning.dialect:
+            message += ". The dialect line is paused on this PC (Settings → Speed → precise forces it)."
+        self.status(message)
+        for line in report(tr.pass_seconds, tr.device):
+            print(f"» {line}", file=sys.stderr, flush=True)
 
     def _load_dialect(self) -> None:
         with self._dialect_lock:
@@ -397,9 +424,6 @@ class App:
             if self.pipeline:
                 self.pipeline.dialect_transcriber = tr
             self.status("Ready - listening." if self.pipeline else "Dialect model ready.")
-            if self.transcriber is not None and self.transcriber.device == "cpu":
-                self.status("Running on the CPU: the dialect line is filled in when the CPU is "
-                            "free. An NVIDIA graphics card makes it about 10x faster.")
 
     def _new_source(self):
         from .audio import SoundcardSource
@@ -432,7 +456,9 @@ class App:
 
         self.pipeline = LivePipeline(self._new_source(), self.transcriber, self.hub.get, self.book,
                                      self.status, options=self.options,
-                                     segmenter=Segmenter(min_segment_s=3.0, max_segment_s=15.0),
+                                     segmenter=Segmenter(
+                                         min_segment_s=self.tuning.min_segment_s if self.tuning else 3.0,
+                                         max_segment_s=15.0),
                                      dialect_transcriber=self.dialect_transcriber).start()
 
     def _restart_capture(self) -> None:
@@ -611,13 +637,20 @@ class SettingsDialog:
         field("Azure region", ttk.Entry(win, textvariable=self.azure_region, width=36),
               "As shown in the Azure portal, e.g. switzerlandnorth or westeurope.")
 
-        head("SPEECH MODEL ON THIS PC (applies at next start)")
+        head("SPEECH MODEL ON THIS PC")
         self.model = ttk.Combobox(win, width=34, values=list(MODEL_PRESETS))
         self.model.set(s.model)
         field("Model", self.model)
         self.compute = ttk.Combobox(win, state="readonly", width=34, values=["auto", "cpu", "cuda"])
         self.compute.set(s.compute)
-        field("Run on", self.compute)
+        field("Run on", self.compute, "Model and Run on apply at the next start.")
+        from .tuning import SPEEDS
+
+        self.speed = ttk.Combobox(win, state="readonly", width=34, values=list(SPEEDS))
+        self.speed.set(s.speed)
+        field("Speed", self.speed, "auto: measured at start. fast: no dialect line, longer "
+                                   "segments. precise: dialect line, wider search.")
+        field("", ttk.Button(win, text="Check this PC…", command=self.speed_check))
 
         buttons = ttk.Frame(win)
         buttons.grid(row=1, column=0, columnspan=2, sticky="e", pady=(16, 0))
@@ -669,8 +702,19 @@ class SettingsDialog:
                        translator=self.translator.get(), source=source, device=device,
                        font_size=font_size, always_on_top=bool(self.on_top.get()),
                        model=self.model.get().strip() or s.model, compute=self.compute.get(),
-                       recognizer=self.recognizers[self.recognizer.get()],
+                       recognizer=self.recognizers[self.recognizer.get()], speed=self.speed.get(),
                        azure_region=self.azure_region.get().strip() or "switzerlandnorth")
+
+    def speed_check(self) -> None:
+        from tkinter import messagebox
+
+        from .tuning import report
+
+        tr = self.app.transcriber
+        lines = report(getattr(tr, "pass_seconds", None), getattr(tr, "device", None))
+        if self.app.tuning is not None:
+            lines.append("Now: " + self.app.tuning.describe(tr.pass_seconds))
+        messagebox.showinfo("This PC", "\n\n".join(lines), parent=self.win)
 
     def save(self) -> None:
         if self.save_keys():

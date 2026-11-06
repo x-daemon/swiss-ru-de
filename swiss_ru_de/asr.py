@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import time
 from dataclasses import dataclass
 from typing import Callable, Iterator
 
@@ -218,12 +219,20 @@ class Transcriber:
             log(f"Could not load '{model}' ({e}). Falling back to {FALLBACK_MODEL}.")
             path = FALLBACK_MODEL
 
+        def one_pass(m) -> float:
+            started = time.perf_counter()
+            segments, _ = m.transcribe(np.zeros(SAMPLE_RATE, dtype=np.float32), language="de",
+                                       beam_size=1, temperature=0.0)
+            list(segments)
+            return time.perf_counter() - started
+
         def load(device: str, ctype: str):
             m = WhisperModel(path, device=device, compute_type=ctype, cpu_threads=threads)
             _fix_mel_bins(m)
-            # warm-up: loads all kernels so the first real sentence is fast
-            segments, _ = m.transcribe(np.zeros(SAMPLE_RATE, dtype=np.float32), language="de", beam_size=1)
-            list(segments)
+            one_pass(m)  # warm-up: loads all kernels so the first real sentence is fast
+            # Every recognition pass costs about the same (a 30 s window), so one timed pass
+            # tells how fast this PC is; used to tune live mode (see tuning.py).
+            self.pass_seconds = one_pass(m)
             return m
 
         try:
@@ -236,7 +245,7 @@ class Transcriber:
             self.model = load("cpu", "int8")
         # Wider search (beam) is more precise; cheap on a GPU, too slow live on a CPU.
         self.beam_size = beam_size or (5 if self.device == "cuda" else 1)
-        log(f"Speech model ready on {self.device.upper()}.")
+        log(f"Speech model ready on {self.device.upper()} ({self.pass_seconds:.1f} s per pass).")
 
     def _options(self, beam_size: int, live: bool = False) -> dict:
         # Live: one decoding pass only. The temperature fallback re-decodes up to 3 more

@@ -37,6 +37,10 @@ class FakeSource:
 
 
 class FakeTranscriber:
+    pass_seconds = 0.5  # measured speed of one pass (see tuning.py)
+    device = "cpu"
+    beam_size = None
+
     def __init__(self, word="Satz"):
         self.word = word
         self.calls = []
