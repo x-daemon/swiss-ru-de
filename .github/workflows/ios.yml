@@ -8,6 +8,10 @@ on:
     paths: ["ios/**", ".github/workflows/ios.yml"]
   workflow_dispatch:
 
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: macos-15
@@ -64,6 +68,16 @@ jobs:
           mkdir -p Payload && cp -R "$APP" Payload/
           zip -qry SwissRuDe-unsigned.ipa Payload
           ls -lh SwissRuDe-unsigned.ipa
+
+      - name: Inspect app
+        working-directory: ios
+        run: |
+          APP=Payload/SwissRuDe.app
+          echo "--- app Info.plist"; plutil -p "$APP/Info.plist" | grep -E "CFBundle(Identifier|DisplayName|ShortVersionString)|AppGroupID|BroadcastExtensionID|UIBackgroundModes|NSMicrophone" -A1
+          echo "--- extension Info.plist"; plutil -p "$APP/PlugIns/SwissRuDeBroadcast.appex/Info.plist" | grep -E "CFBundleIdentifier|AppGroupID|NSExtension|RPBroadcast" -A3
+          echo "--- entitlements"; ldid -e "$APP/SwissRuDe"; ldid -e "$APP/PlugIns/SwissRuDeBroadcast.appex/SwissRuDeBroadcast"
+          echo "--- sizes"; du -sh "$APP" "$APP/SwissRuDe" "$APP/PlugIns/SwissRuDeBroadcast.appex"
+          echo "--- linked WhisperKit"; nm -gU "$APP/SwissRuDe" 2>/dev/null | grep -c WhisperKit || true
 
       - uses: actions/upload-artifact@v4
         with:

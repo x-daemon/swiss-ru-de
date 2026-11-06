@@ -51,8 +51,9 @@ final class FloatingCaptions: NSObject, ObservableObject {
         lastBottom = bottom
         guard isEnabled, let buffer = Self.render(top: top, bottom: bottom, size: size),
               let sample = Self.sampleBuffer(buffer) else { return }
-        if displayLayer.status == .failed { displayLayer.flush() }
-        displayLayer.enqueue(sample)
+        let renderer = displayLayer.sampleBufferRenderer
+        if renderer.status == .failed { renderer.flush() }
+        renderer.enqueue(sample)
     }
 
     // MARK: drawing
