@@ -3,6 +3,7 @@ microphone / virtual input, and audio downloaded from a URL."""
 
 from __future__ import annotations
 
+import importlib
 import sys
 import threading
 import warnings
@@ -14,23 +15,50 @@ import numpy as np
 from .config import SAMPLE_RATE
 
 
-def _ensure_com() -> None:
-    """Windows: make sure COM is initialised in this thread (needed for WASAPI). It is
-    harmless if it already is."""
-    if sys.platform == "win32":
-        import ctypes
+S_FALSE_ERROR = "0x100000001"  # how soundcard reports S_FALSE ("COM already initialised")
 
-        ctypes.windll.ole32.CoInitializeEx(None, 0)  # COINIT_MULTITHREADED
+
+def _ole32():
+    import ctypes
+
+    return ctypes.windll.ole32
+
+
+def _ensure_com() -> None:
+    """Windows: join the multithreaded COM apartment in this thread (needed for WASAPI).
+    Harmless if the thread already is initialised (returns S_FALSE, which we ignore)."""
+    if sys.platform == "win32":
+        _ole32().CoInitializeEx(None, 0)  # COINIT_MULTITHREADED
 
 
 def _import_soundcard():
-    _ensure_com()
+    """Import soundcard and make COM usable in the calling thread.
+
+    On Windows, soundcard initialises COM itself when it is first imported, and treats
+    S_FALSE ("already initialised in this thread") as a fatal error ("Error 0x100000001").
+    So COM must not be initialised before that first import; other threads join it after.
+    """
     try:
-        import soundcard
-    except Exception as e:  # no PulseAudio/WASAPI/CoreAudio available
-        hint = " Is PulseAudio/PipeWire running?" if sys.platform.startswith("linux") else ""
-        raise RuntimeError(f"No audio system available for capture.{hint} ({e!r})") from e
+        soundcard = importlib.import_module("soundcard")
+    except RuntimeError as e:
+        if sys.platform != "win32" or S_FALSE_ERROR not in str(e):
+            raise _no_audio(e) from e
+        # Something else already initialised COM in this thread: give back that one
+        # reference so soundcard's own initialisation succeeds, then import again.
+        _ole32().CoUninitialize()
+        try:
+            soundcard = importlib.import_module("soundcard")
+        except Exception as e2:
+            raise _no_audio(e2) from e2
+    except Exception as e:  # no PulseAudio/PipeWire/WASAPI/CoreAudio
+        raise _no_audio(e) from e
+    _ensure_com()  # the module may have been imported by another thread
     return soundcard
+
+
+def _no_audio(e: Exception) -> RuntimeError:
+    hint = " Is PulseAudio/PipeWire running?" if sys.platform.startswith("linux") else ""
+    return RuntimeError(f"Could not open the audio system.{hint} ({e!r})")
 
 
 def list_devices() -> str:
