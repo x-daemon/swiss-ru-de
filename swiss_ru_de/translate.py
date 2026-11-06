@@ -251,7 +251,8 @@ class OfflineTranslator(Translator):
         self._torch = torch
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self._torch_model = AutoModelForSeq2SeqLM.from_pretrained(self.model_name).to(self.device).eval()
-        self.gen = {"max_new_tokens": 256, "num_beams": 2}
+        self.gen = {"max_new_tokens": 256, "num_beams": 2, "repetition_penalty": 1.2,
+                    "no_repeat_ngram_size": 3}
         if self.nllb:
             self.gen["forced_bos_token_id"] = self.tok.convert_tokens_to_ids("rus_Cyrl")
 
@@ -270,7 +271,8 @@ class OfflineTranslator(Translator):
         source = self.tok.convert_ids_to_tokens(self.tok.encode(text, truncation=True, max_length=512))
         prefix = [["rus_Cyrl"]] if self.nllb else None
         result = self._ct2.translate_batch([source], target_prefix=prefix, beam_size=2,
-                                           max_decoding_length=256)
+                                           max_decoding_length=256, repetition_penalty=1.2,
+                                           no_repeat_ngram_size=3)  # no "есть есть есть"
         tokens = result[0].hypotheses[0]
         if self.nllb and tokens and tokens[0] == "rus_Cyrl":
             tokens = tokens[1:]
@@ -284,6 +286,20 @@ class OfflineTranslator(Translator):
 
 
 # ---------------------------------------------------------------------- factory
+def resolve_kind(kind: str) -> str:
+    """What "auto" means right now: the best translator that has a key."""
+    if kind != "auto":
+        return kind
+    if keys.has_key("anthropic"):
+        return "claude"
+    if keys.has_key("deepl"):
+        return "deepl"
+    return "offline"
+
+
+QUALITY_LABEL = {"claude": "Claude", "deepl": "DeepL", "offline": "offline, basic quality"}
+
+
 def make_translator(
     kind: str = "auto",
     target: str = "ru",
@@ -294,13 +310,7 @@ def make_translator(
 ) -> Translator:
     if target == "de":
         return Passthrough()
-    if kind == "auto":
-        if keys.has_key("anthropic"):
-            kind = "claude"
-        elif keys.has_key("deepl"):
-            kind = "deepl"
-        else:
-            kind = "offline"
+    kind = resolve_kind(kind)
     if kind == "claude":
         return ClaudeTranslator(model=claude_model, dialect=dialect)
     if kind == "deepl":

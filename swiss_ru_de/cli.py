@@ -66,6 +66,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "and the Claude translation; recognition handles all dialects anyway")
 
     asr = p.add_argument_group("speech recognition")
+    asr.add_argument("--recognizer", choices=["local", "azure"], default="local",
+                     help="local = Whisper on this PC (default); azure = Azure AI Speech de-CH "
+                          "in the cloud (fast, needs AZURE_SPEECH_KEY; live audio only)")
+    asr.add_argument("--azure-region", default="switzerlandnorth",
+                     help="region of your Azure Speech resource (default switzerlandnorth)")
     asr.add_argument("--model", default=DEFAULT_MODEL,
                      help=f"preset ({', '.join(MODEL_PRESETS)}), Hugging Face repo or local folder "
                           f"(default {DEFAULT_MODEL})")
@@ -80,8 +85,11 @@ def build_parser() -> argparse.ArgumentParser:
                      help="beam size: higher = a bit more accurate, slower (default live 1, file 5)")
     asr.add_argument("--pause-ms", type=int, default=600,
                      help="pause that ends a sentence in live mode (default 600)")
-    asr.add_argument("--max-seconds", type=float, default=12.0,
-                     help="longest live segment before it is cut (default 12)")
+    asr.add_argument("--max-seconds", type=float, default=15.0,
+                     help="longest live segment before it is cut (default 15)")
+    asr.add_argument("--min-seconds", type=float, default=3.0,
+                     help="join shorter utterances with the next one: more context, more "
+                          "precise and fewer passes (default 3, 0 = off)")
 
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return p
@@ -127,9 +135,12 @@ def main(argv: list[str] | None = None) -> int:
 
     device = "cpu" if args.cpu else "cuda" if args.gpu else "auto"
     live = not (args.url or args.file)
-    beam = args.beam or (1 if live else 5)
-    transcriber = Transcriber(args.model, device=device, compute_type=args.compute_type,
-                              beam_size=beam, hint=args.hint, log=log)
+    cloud = live and args.recognizer == "azure"
+    beam = args.beam or (None if live else 5)
+    transcriber = None
+    if not cloud:
+        transcriber = Transcriber(args.model, device=device, compute_type=args.compute_type,
+                                  beam_size=beam, hint=args.hint, log=log)
     dialect_tr = None
     if args.dialect_text:
         log("Loading dialect model …")
@@ -162,6 +173,8 @@ def main(argv: list[str] | None = None) -> int:
     book = LineBook(on_line=on_line)
     options = Options(target=args.to, dialect=dialect_tr is not None)
     try:
+        if cloud:
+            return _run_cloud(args, dialect_tr, hub, book, options, on_status, overlay)
         if live:
             return _run_live(args, transcriber, dialect_tr, hub, book, options, on_status, overlay)
         return _run_file(args, transcriber, dialect_tr, hub, book, options, on_status, overlay, beam)
@@ -177,9 +190,37 @@ def _run_live(args, transcriber, dialect_tr, hub, book, options, on_status, over
     from .segmenter import Segmenter
 
     source = SoundcardSource(loopback=not args.mic, device=args.device)
-    segmenter = Segmenter(silence_ms=args.pause_ms, max_segment_s=args.max_seconds)
+    segmenter = Segmenter(silence_ms=args.pause_ms, max_segment_s=args.max_seconds,
+                          min_segment_s=args.min_seconds)
     pipeline = LivePipeline(source, transcriber, hub.get, book, on_status, options=options,
                             segmenter=segmenter, dialect_transcriber=dialect_tr).start()
+    log("Press Ctrl+C to stop." if not overlay else "Esc or double-click the subtitles to stop.")
+    try:
+        if overlay:
+            overlay.run(should_stop=pipeline.stop_event.is_set)
+        else:
+            while not pipeline.wait(0.5):
+                pass
+    except KeyboardInterrupt:
+        pass
+    finally:
+        pipeline.stop()
+    return 1 if pipeline.error else 0
+
+
+def _run_cloud(args, dialect_tr, hub, book, options, on_status, overlay) -> int:
+    from . import keys
+    from .audio import SoundcardSource
+    from .cloud import CloudPipeline
+
+    key = keys.get_key("azure")
+    if not key:
+        log("Set AZURE_SPEECH_KEY (or save the key in the window's Settings).")
+        return 2
+    phrases = [p.strip() for p in (args.hint or "").split(",") if p.strip()]
+    pipeline = CloudPipeline(SoundcardSource(loopback=not args.mic, device=args.device), hub.get,
+                             book, on_status, key=key, region=args.azure_region, options=options,
+                             dialect_transcriber=dialect_tr, phrases=phrases).start()
     log("Press Ctrl+C to stop." if not overlay else "Esc or double-click the subtitles to stop.")
     try:
         if overlay:

@@ -91,13 +91,14 @@ def test_offline_ct2_strips_target_language_token():
     t = make_offline()
     calls = {}
 
-    def translate_batch(batch, target_prefix=None, beam_size=2, max_decoding_length=256):
-        calls["batch"], calls["prefix"] = batch, target_prefix
+    def translate_batch(batch, target_prefix=None, **options):
+        calls["batch"], calls["prefix"], calls["options"] = batch, target_prefix, options
         return [SimpleNamespace(hypotheses=[["rus_Cyrl", "▁При", "вет"]])]
 
     t._ct2 = SimpleNamespace(translate_batch=translate_batch)
     assert t.translate("Zmorge") == "Привет"
     assert calls["batch"] == [["t1", "t2", "t3"]] and calls["prefix"] == [["rus_Cyrl"]]
+    assert calls["options"]["no_repeat_ngram_size"] == 3  # no "есть есть есть"
     assert t.tok.decoded_tokens == ["▁При", "вет"]
 
 
@@ -112,3 +113,34 @@ def test_offline_falls_back_to_pytorch_when_ct2_fails(monkeypatch):
     monkeypatch.setattr(OfflineTranslator, "_translate_torch", lambda self, text: f"torch:{text}")
     assert t.translate("Velo") == "torch:Fahrrad"
     assert t._ct2 is None  # stays on PyTorch afterwards
+
+
+def test_translator_label_shows_what_auto_uses():
+    assert translate.resolve_kind("auto") == "offline"
+    keys.set_key("deepl", "abc:fx")
+    assert translate.resolve_kind("auto") == "deepl"
+    keys.set_key("anthropic", "sk-ant-x")
+    assert translate.resolve_kind("auto") == "claude"
+    assert translate.resolve_kind("offline") == "offline"
+    assert "basic" in translate.QUALITY_LABEL["offline"]
+
+
+def test_beam_size_auto_depends_on_device(monkeypatch):
+    seen = {}
+
+    class FakeModel:
+        def __init__(self, path, device, compute_type, cpu_threads):
+            seen["device"] = device
+            self.model = SimpleNamespace(n_mels=None)
+
+        def transcribe(self, audio, **kw):
+            return iter([]), None
+
+    import faster_whisper
+
+    monkeypatch.setattr(faster_whisper, "WhisperModel", FakeModel)
+    monkeypatch.setattr(asr, "resolve_model", lambda name, log: "local")
+    for device, beam in (("cpu", 1), ("cuda", 5)):
+        t = asr.Transcriber("x", device=device, log=lambda m: None)
+        assert t.beam_size == beam
+    assert asr.Transcriber("x", device="cpu", beam_size=3, log=lambda m: None).beam_size == 3

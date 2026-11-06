@@ -27,10 +27,10 @@ def fakes(monkeypatch):
 
 def test_live_german(fakes, capsys, tmp_path):
     out = tmp_path / "live.txt"
-    assert cli.main(["--to", "de", "--save", str(out), "--cpu"]) == 0
+    assert cli.main(["--to", "de", "--save", str(out), "--cpu", "--min-seconds", "0"]) == 0
     printed = capsys.readouterr().out
     assert "Satz 1" in printed and "Satz 2" in printed
-    assert fakes["kw"]["device"] == "cpu" and fakes["kw"]["beam_size"] == 1
+    assert fakes["kw"]["device"] == "cpu" and fakes["kw"]["beam_size"] is None  # auto
     assert out.read_text(encoding="utf-8").count("Satz") == 2
 
 

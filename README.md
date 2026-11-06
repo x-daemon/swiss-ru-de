@@ -141,33 +141,46 @@ swiss-ru-de --to both --dialect berner-oberland
 
   If a preset can't be downloaded, the tool falls back to plain `large-v3-turbo`.
 
-## Speed
+## Speed and precision: choose the recogniser
 
-How fast this runs depends almost entirely on whether there is an **NVIDIA graphics card**:
+| Recogniser (Settings → *Recognise with*) | Speed | Notes |
+|---|---|---|
+| **Azure cloud (de-CH)** | Text appears *while* people speak; the final sentence ~1 s after the pause | Microsoft's [Swiss German dialect model](https://azure.microsoft.com/en-gb/updates/release-of-swiss-german-dialect-speech-to-text/). Writes Standard German. No CPU load. Free tier: 5 h audio per month, then about 1 USD per hour. Only speech is sent, not silence. |
+| **This PC + NVIDIA GPU** | about 1 s per sentence | Free and private. `start-windows.bat` installs the CUDA libraries automatically. |
+| **This PC, CPU only** | a few seconds per sentence | Free and private, but slow on weak PCs. |
 
-| Hardware | Delay per sentence |
-|---|---|
-| NVIDIA GPU (GeForce RTX, …) | well under a second, about 10x faster than CPU |
-| Modern CPU only | a few seconds |
+**Setting up Azure (5 minutes, free tier):**
 
-* **GPU:** `start-windows.bat` detects an NVIDIA card (`nvidia-smi`) and installs the CUDA
-  libraries with pip (about 1 GB, once). Nothing else to install, apart from a current NVIDIA
-  driver. Manual install: `pip install -e ".[all,gpu]"`. Check *Settings → Run on*: `auto`
-  uses the GPU when it works.
-* **CPU only:**
-  * Live recognition uses a single decoding pass. The retry passes Whisper does on unclear
-    audio are only used for files.
-  * The dialect line (2nd model) is filled in only when no other speech is waiting, so the
-    translation never falls behind. For the fastest results, set the top part to
-    *Standard German*.
-  * The offline translator is converted to CTranslate2 int8 on first use. It is about 3x
-    faster and leaves the CPU to speech recognition. Claude and DeepL use no local CPU at all.
-* `--to de` skips translation entirely.
-* `--pause-ms 400` shows sentences sooner, but cuts them more often.
+1. Sign in at [portal.azure.com](https://portal.azure.com) (a free account works).
+2. *Create a resource → Speech*.
+3. Choose region **Switzerland North** and pricing tier **Free F0**, then create it.
+4. Open the resource → *Keys and Endpoint* → copy **Key 1**.
+5. In swiss-ru-de *Settings*, set *Recognise with* to **Azure cloud**, paste the key, and
+   check that the region is `switzerlandnorth`. Save.
+
+The key is stored in the Windows Credential Manager. On the command line use
+`--recognizer azure` with the `AZURE_SPEECH_KEY` environment variable. Names and terms from
+`--hint` are passed to Azure as a phrase list. Files and YouTube links always use the local
+recogniser.
+
+With Azure, the dialect line (top) still comes from the local model. It is filled in when the
+CPU has time; until then the top shows the Standard German, dimmed.
+
+**On this PC, recognition is tuned like this:**
+
+* Short utterances are joined (at least ~3 s, up to a 1.5 s pause). Whisper is more precise
+  with more context, and every recognition pass costs the same 30 s window, so this is also
+  faster. Change it with `--min-seconds`.
+* Live mode decodes once (no retry passes). With a GPU it searches wider (beam 5) for more
+  precision.
+* The dialect line is filled in only when no other speech is waiting.
+* GPU: `start-windows.bat` detects an NVIDIA card and installs cuBLAS/cuDNN with pip (about
+  1 GB, once). Manual install: `pip install -e ".[all,gpu]"`.
 
 ## Translation quality
 
-The offline translator is free, but translates literally. For example it turns *Zmorge*
+The bottom header shows which translator is active (e.g. *перевод · offline, basic
+quality*). The offline translator is free, but translates literally. For example it turns *Zmorge*
 (breakfast) into "tomorrow". Common Swiss words (Zmorge, Velo, Natel, Gipfeli, Spital, …) are
 replaced by Standard German before it translates, which helps somewhat. The real fix is
 **Claude** (best: uses the earlier sentences, knows Swiss words, corrects recognition errors)
@@ -220,8 +233,12 @@ dialect is welcome.
 3. Откроется окно из двух частей. Сверху: швейцарский немецкий, как его произнесли (на диалекте).
    Снизу: перевод на русский или литературный немецкий; выбор в **Settings**.
 
-Для лучшего перевода задайте ключ `ANTHROPIC_API_KEY` (Claude) или `DEEPL_AUTH_KEY` (DeepL).
-Без ключа работает офлайн-перевод.
+Чтобы было **быстро и точно** на компьютере без видеокарты NVIDIA:
+
+1. *Settings → Recognise with → Azure cloud*, ключ Azure Speech (регион Switzerland North,
+   5 бесплатных часов в месяц). Текст появляется прямо во время речи.
+2. Ключ **Claude** или **DeepL** в *Settings*. Без ключа используется офлайн-перевод,
+   а он переводит дословно и с ошибками.
 
 ## License
 

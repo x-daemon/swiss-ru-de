@@ -44,12 +44,20 @@ class Segmenter:
         floor_db: float = -55.0,
         max_noise_db: float = -35.0,
         noise_window_s: float = 5.0,
+        min_segment_s: float = 0.0,
+        long_silence_ms: int = 1500,
     ):
         self.sr = sample_rate
         self.frame = int(sample_rate * frame_ms / 1000)
         self.silence_frames = max(1, silence_ms // frame_ms)
         self.min_speech_frames = max(1, min_speech_ms // frame_ms)
         self.max_frames = max(2, int(max_segment_s * 1000 / frame_ms))
+        # Short utterances are kept open (up to a long pause) and joined with the next one:
+        # Whisper is more accurate with more context, and every recognition pass costs the
+        # same 30 s window however short the audio is - so fewer, longer segments are both
+        # more precise and faster.
+        self.min_frames = int(min_segment_s * 1000 / frame_ms)
+        self.long_silence_frames = max(self.silence_frames, long_silence_ms // frame_ms)
         self.keep_tail_frames = max(1, 200 // frame_ms)  # keep a little silence at the end
         self.margin_db = margin_db
         self.floor_db = floor_db
@@ -125,8 +133,11 @@ class Segmenter:
         self._dbs.append(db)
         self._silence_run = 0 if speech else self._silence_run + 1
 
-        if self._silence_run >= self.silence_frames:
-            keep = len(self._frames) - self._silence_run + self.keep_tail_frames
+        spoken = len(self._frames) - self._silence_run
+        if self._silence_run >= self.silence_frames and (
+            spoken >= self.min_frames or self._silence_run >= self.long_silence_frames
+        ):
+            keep = spoken + self.keep_tail_frames
             seg = self._emit(keep)
             self._reset()
             return seg

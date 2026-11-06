@@ -145,6 +145,7 @@ class App:
         self._file_stop = threading.Event()
         self._dialect_lock = threading.Lock()
         self._fatal = False
+        self._needs_restart = False
         self._build()
         threading.Thread(target=self._startup, args=(file, url), daemon=True).start()
         self.root.after(80, self._poll)
@@ -199,8 +200,13 @@ class App:
         root.bind("<Control-minus>", lambda e: self._zoom(-2))
 
     def _set_titles(self) -> None:
+        from .translate import QUALITY_LABEL, resolve_kind
+
         self.top.set_titles(*TOP_TITLES[self.s.top])
-        self.bottom.set_titles(*BOTTOM_TITLES[self.s.target])
+        title, subtitle = BOTTOM_TITLES[self.s.target]
+        if self.s.target != "de":
+            subtitle += " · " + QUALITY_LABEL.get(resolve_kind(self.s.translator), "")
+        self.bottom.set_titles(title, subtitle)
 
     def _zoom(self, delta: int) -> None:
         self.s.font_size = max(10, min(48, self.s.font_size + delta))
@@ -255,7 +261,7 @@ class App:
     def _top_text(self, line: Line) -> tuple[str, bool]:
         if self.s.top == "dialect":
             if line.dialect_pending:
-                return "", True
+                return line.german, True  # Standard German, dimmed, until the dialect is ready
             if line.dialect:
                 return line.dialect, False
         return line.german, False  # Standard German (or dialect model not ready yet)
@@ -333,21 +339,24 @@ class App:
         self.bottom.set_font(new.font_size)
         self._set_titles()
         self._rerender()
-        if (new.source, new.device) != (old.source, old.device) and self.pipeline:
+        if not self.file_mode and (
+            (new.source, new.device, new.recognizer, new.azure_region)
+            != (old.source, old.device, old.recognizer, old.azure_region)
+            or self._needs_restart
+        ):
+            self._needs_restart = False
             threading.Thread(target=self._restart_capture, daemon=True).start()
         if (new.model, new.dialect_model, new.compute) != (old.model, old.dialect_model, old.compute):
             self.status("Speech model changes apply at the next start.")
 
     # --------------------------------------------------------------- background
     def _startup(self, file: str | None, url: str | None) -> None:
-        try:
-            from .asr import Transcriber
-
-            self.status("Loading speech model … (the first start downloads about 1.6 GB)")
-            self.transcriber = Transcriber(self.s.model, device=self.s.compute, beam_size=1,
-                                           log=self.status)
-        except Exception as e:
-            self.events.put(("fatal", f"Could not load the speech model:\n{e}"))
+        if self.s.recognizer == "azure" and not self.file_mode:
+            self._start_capture()  # nothing big to load: recognition runs in the cloud
+            if self.options.dialect:
+                self._load_dialect()
+            return
+        if not self._load_local_model():
             return
         if self.file_mode:
             if self.options.dialect:
@@ -357,6 +366,19 @@ class App:
         self._start_capture()
         if self.options.dialect:
             self._load_dialect()
+
+    def _load_local_model(self) -> bool:
+        if self.transcriber is not None:
+            return True
+        try:
+            from .asr import Transcriber
+
+            self.status("Loading speech model … (the first start downloads about 1.6 GB)")
+            self.transcriber = Transcriber(self.s.model, device=self.s.compute, log=self.status)
+            return True
+        except Exception as e:
+            self.events.put(("fatal", f"Could not load the speech model:\n{e}"))
+            return False
 
     def _load_dialect(self) -> None:
         with self._dialect_lock:
@@ -385,12 +407,36 @@ class App:
         return SoundcardSource(loopback=self.s.source != "mic", device=self.s.device or None)
 
     def _start_capture(self) -> None:
+        self._fatal = False
+        if self.s.recognizer == "azure":
+            from . import keys
+            from .cloud import CloudPipeline
+
+            key = keys.get_key("azure")
+            if not key:
+                self._needs_restart = True
+                self.events.put(("fatal", "Azure is selected for speech recognition, but no Azure "
+                                          "Speech key is set.\nAdd it in Settings."))
+                return
+            try:
+                self.pipeline = CloudPipeline(
+                    self._new_source(), self.hub.get, self.book, self.status, key=key,
+                    region=self.s.azure_region.strip() or "switzerlandnorth", options=self.options,
+                    dialect_transcriber=self.dialect_transcriber).start()
+            except Exception as e:
+                self.events.put(("fatal", f"Could not start Azure speech recognition:\n{e}"))
+            return
+        if not self._load_local_model():
+            return
+        from .segmenter import Segmenter
+
         self.pipeline = LivePipeline(self._new_source(), self.transcriber, self.hub.get, self.book,
                                      self.status, options=self.options,
+                                     segmenter=Segmenter(min_segment_s=3.0, max_segment_s=15.0),
                                      dialect_transcriber=self.dialect_transcriber).start()
 
     def _restart_capture(self) -> None:
-        old = self.pipeline
+        old, self.pipeline = self.pipeline, None
         if old:
             old.stop(wait=True)
         self._start_capture()
@@ -468,22 +514,32 @@ class SettingsDialog:
         win.resizable(False, False)
         _dark_ttk(app.root)
 
-        row = 0
+        # Two columns, so the dialog fits on a laptop screen.
+        cols = [ttk.Frame(win), ttk.Frame(win)]
+        cols[0].grid(row=0, column=0, sticky="n", padx=(0, 28))
+        cols[1].grid(row=0, column=1, sticky="n")
+        rows = [0, 0]
+        col = 0
+
+        def column(i):
+            nonlocal col
+            col = i
 
         def head(text):
-            nonlocal row
-            ttk.Label(win, text=text, style="Head.TLabel").grid(row=row, column=0, columnspan=2,
-                                                                sticky="w", pady=(10 if row else 0, 2))
-            row += 1
+            frame, r = cols[col], rows[col]
+            ttk.Label(frame, text=text, style="Head.TLabel").grid(row=r, column=0, columnspan=2,
+                                                                  sticky="w", pady=(10 if r else 0, 2))
+            rows[col] += 1
 
         def field(label, widget, note=None):
-            nonlocal row
-            ttk.Label(win, text=label).grid(row=row, column=0, sticky="w", padx=(0, 12), pady=3)
-            widget.grid(row=row, column=1, sticky="we", pady=2)
-            row += 1
+            frame, r = cols[col], rows[col]
+            ttk.Label(frame, text=label).grid(row=r, column=0, sticky="w", padx=(0, 12), pady=3)
+            widget.grid(in_=frame, row=r, column=1, sticky="we", pady=2)
+            rows[col] += 1
             if note:
-                ttk.Label(win, text=note, style="Note.TLabel").grid(row=row, column=1, sticky="w")
-                row += 1
+                ttk.Label(frame, text=note, style="Note.TLabel", wraplength=300,
+                          justify="left").grid(row=r + 1, column=1, sticky="w")
+                rows[col] += 1
 
         head("BOTTOM PANE")
         self.target = tk.StringVar(value=s.target)
@@ -502,24 +558,25 @@ class SettingsDialog:
         ttk.Radiobutton(f, text="Standard German", value="german", variable=self.top).pack(anchor="w")
         field("Show", f, "Uses a 2nd speech model; on a CPU it is filled in when there is time.")
         self.dialect_labels = {k: (f"{k} – {v}" if v else "auto – any dialect") for k, v in DIALECTS.items()}
-        self.dialect = ttk.Combobox(win, state="readonly", width=48,
+        self.dialect = ttk.Combobox(win, state="readonly", width=34,
                                     values=list(self.dialect_labels.values()))
         self.dialect.set(self.dialect_labels.get(s.dialect, self.dialect_labels["auto"]))
         field("Dialect", self.dialect, "Optional: helps dialect spelling and translation.")
 
         head("TRANSLATION")
-        self.translator = ttk.Combobox(win, state="readonly", width=48,
+        self.translator = ttk.Combobox(win, state="readonly", width=34,
                                        values=["auto", "claude", "deepl", "offline"])
         self.translator.set(s.translator)
         field("Translator", self.translator,
               "auto = Claude if its key is set, else DeepL, else offline (lowest quality).")
         self.claude_key = tk.StringVar()
         self.deepl_key = tk.StringVar()
-        field("Claude API key", ttk.Entry(win, textvariable=self.claude_key, show="•", width=50),
+        field("Claude API key", ttk.Entry(win, textvariable=self.claude_key, show="•", width=36),
               self._key_note("anthropic", "console.anthropic.com - best translation"))
-        field("DeepL API key", ttk.Entry(win, textvariable=self.deepl_key, show="•", width=50),
+        field("DeepL API key", ttk.Entry(win, textvariable=self.deepl_key, show="•", width=36),
               self._key_note("deepl", "deepl.com/pro-api - free key available"))
 
+        column(1)
         head("AUDIO")
         speakers, mics = device_names()
         self.sources = {"PC audio – default speaker": ("loopback", "")}
@@ -530,7 +587,7 @@ class SettingsDialog:
         if current is None:
             current = f"{'PC audio' if s.source == 'loopback' else 'Microphone'} – {s.device}"
             self.sources[current] = (s.source, s.device)
-        self.source = ttk.Combobox(win, state="readonly", width=48, values=list(self.sources))
+        self.source = ttk.Combobox(win, state="readonly", width=34, values=list(self.sources))
         self.source.set(current)
         field("Listen to", self.source, "For Teams pick the speaker/headset Teams plays on.")
 
@@ -540,16 +597,30 @@ class SettingsDialog:
         self.on_top = tk.BooleanVar(value=s.always_on_top)
         field("", ttk.Checkbutton(win, text="Always on top", variable=self.on_top))
 
-        head("SPEECH MODEL (applies at next start)")
-        self.model = ttk.Combobox(win, width=48, values=list(MODEL_PRESETS))
+        head("SPEECH RECOGNITION")
+        self.recognizers = {"On this PC (Whisper, free)": "local",
+                            "Azure cloud (fast, Swiss German de-CH)": "azure"}
+        self.recognizer = ttk.Combobox(win, state="readonly", width=34, values=list(self.recognizers))
+        self.recognizer.set(next(k for k, v in self.recognizers.items() if v == s.recognizer))
+        field("Recognise with", self.recognizer,
+              "Azure: text while people speak, no CPU load; 5 free hours/month.")
+        self.azure_key = tk.StringVar()
+        field("Azure Speech key", ttk.Entry(win, textvariable=self.azure_key, show="•", width=36),
+              self._key_note("azure", "portal.azure.com → Speech service"))
+        self.azure_region = tk.StringVar(value=s.azure_region)
+        field("Azure region", ttk.Entry(win, textvariable=self.azure_region, width=36),
+              "As shown in the Azure portal, e.g. switzerlandnorth or westeurope.")
+
+        head("SPEECH MODEL ON THIS PC (applies at next start)")
+        self.model = ttk.Combobox(win, width=34, values=list(MODEL_PRESETS))
         self.model.set(s.model)
         field("Model", self.model)
-        self.compute = ttk.Combobox(win, state="readonly", width=48, values=["auto", "cpu", "cuda"])
+        self.compute = ttk.Combobox(win, state="readonly", width=34, values=["auto", "cpu", "cuda"])
         self.compute.set(s.compute)
         field("Run on", self.compute)
 
         buttons = ttk.Frame(win)
-        buttons.grid(row=row, column=0, columnspan=2, sticky="e", pady=(16, 0))
+        buttons.grid(row=1, column=0, columnspan=2, sticky="e", pady=(16, 0))
         ttk.Button(buttons, text="Cancel", command=win.destroy).pack(side="right", padx=4)
         ttk.Button(buttons, text="Save", command=self.save, style="Accent.TButton").pack(side="right")
         win.bind("<Escape>", lambda e: win.destroy())
@@ -576,7 +647,8 @@ class SettingsDialog:
         from . import keys
 
         changed = False
-        for name, var in (("anthropic", self.claude_key), ("deepl", self.deepl_key)):
+        for name, var in (("anthropic", self.claude_key), ("deepl", self.deepl_key),
+                          ("azure", self.azure_key)):
             value = var.get().strip()
             if not value:
                 continue
@@ -596,11 +668,15 @@ class SettingsDialog:
         return replace(s, target=self.target.get(), top=self.top.get(), dialect=dialect,
                        translator=self.translator.get(), source=source, device=device,
                        font_size=font_size, always_on_top=bool(self.on_top.get()),
-                       model=self.model.get().strip() or s.model, compute=self.compute.get())
+                       model=self.model.get().strip() or s.model, compute=self.compute.get(),
+                       recognizer=self.recognizers[self.recognizer.get()],
+                       azure_region=self.azure_region.get().strip() or "switzerlandnorth")
 
     def save(self) -> None:
         if self.save_keys():
             self.app.hub.reset()  # recreate translators with the new keys
+            if self.azure_key.get().strip():
+                self.app._needs_restart = True
         new = self.values()
         self.win.destroy()
         self.app.apply_settings(new)

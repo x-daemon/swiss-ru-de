@@ -66,3 +66,18 @@ def test_adapts_to_background_noise():
     segs = feed_in_blocks(Segmenter(), audio)
     assert len(segs) == 1
     assert abs(segs[0].start - 4.0) < 0.4
+
+
+def test_short_utterances_are_joined_until_a_long_pause():
+    # "Nüüd." (0.6 s) - 0.8 s pause - "Warum nüüd?" (0.8 s) - long pause
+    audio = np.concatenate([noise(1.0), tone(0.6), noise(0.8), tone(0.8), noise(2.0)])
+    joined = feed_in_blocks(Segmenter(min_segment_s=3.0), audio)
+    assert len(joined) == 1 and joined[0].duration > 2.0
+    separate = feed_in_blocks(Segmenter(), audio)
+    assert len(separate) == 2
+
+
+def test_long_pause_still_ends_a_short_segment():
+    audio = np.concatenate([noise(1.0), tone(0.8), noise(2.0), tone(0.8), noise(2.0)])
+    segs = feed_in_blocks(Segmenter(min_segment_s=3.0, long_silence_ms=1500), audio)
+    assert len(segs) == 2

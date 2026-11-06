@@ -198,14 +198,13 @@ class Transcriber:
         model: str,
         device: str = "auto",
         compute_type: str | None = None,
-        beam_size: int = 1,
+        beam_size: int | None = None,
         hint: str | None = None,
         log: Log = print,
         prompt: str | None = None,
     ):
         from faster_whisper import WhisperModel
 
-        self.beam_size = beam_size
         self.hint = hint or None
         self.prompt = prompt  # style prompt; used by the dialect transcriber
         self.log = log
@@ -235,6 +234,8 @@ class Transcriber:
             log(f"GPU not usable ({e}); using CPU.")
             self.device = "cpu"
             self.model = load("cpu", "int8")
+        # Wider search (beam) is more precise; cheap on a GPU, too slow live on a CPU.
+        self.beam_size = beam_size or (5 if self.device == "cuda" else 1)
         log(f"Speech model ready on {self.device.upper()}.")
 
     def _options(self, beam_size: int, live: bool = False) -> dict:

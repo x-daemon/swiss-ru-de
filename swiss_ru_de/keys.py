@@ -6,7 +6,7 @@ from __future__ import annotations
 import os
 
 SERVICE = "swiss-ru-de"
-ENV = {"anthropic": "ANTHROPIC_API_KEY", "deepl": "DEEPL_AUTH_KEY"}
+ENV = {"anthropic": "ANTHROPIC_API_KEY", "deepl": "DEEPL_AUTH_KEY", "azure": "AZURE_SPEECH_KEY"}
 
 
 def get_key(name: str) -> str | None:
