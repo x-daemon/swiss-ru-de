@@ -1,0 +1,9 @@
+// Edit these two lines before building with Xcode (see ios/README.md).
+//
+// BUNDLE_ID_PREFIX must be unique to you, e.g. ch.yourname  (only letters, digits, dots, hyphens)
+// DEVELOPMENT_TEAM is your Apple team id; leave empty and pick your team in Xcode instead.
+BUNDLE_ID_PREFIX = ch.example
+DEVELOPMENT_TEAM =
+
+// Shared container between the app and the "iPhone audio" broadcast extension.
+APP_GROUP_ID = group.$(BUNDLE_ID_PREFIX).swissrude

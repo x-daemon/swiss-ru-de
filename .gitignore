@@ -8,3 +8,10 @@ dist/
 .pytest_cache/
 *.srt
 transcript*.txt
+# iOS
+ios/*.xcodeproj/
+ios/build/
+ios/Payload/
+ios/*.ipa
+ios/ent.plist
+ios/build.log

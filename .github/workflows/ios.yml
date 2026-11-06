@@ -1,0 +1,72 @@
+name: iOS app
+
+# Builds the iPhone app on a Mac runner and uploads an unsigned .ipa that Sideloadly or
+# AltStore can sign with your Apple ID and install (see ios/README.md).
+on:
+  push:
+    branches: [main, "ios-*"]
+    paths: ["ios/**", ".github/workflows/ios.yml"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select the newest Xcode
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_*.app | grep -vi beta | sort -V | tail -1)
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+
+      - name: Generate Xcode project
+        working-directory: ios
+        run: |
+          brew install xcodegen ldid
+          xcodegen generate
+
+      - name: Build (unsigned)
+        working-directory: ios
+        run: |
+          set -o pipefail
+          xcodebuild -project SwissRuDe.xcodeproj -scheme SwissRuDe -configuration Release \
+            -destination 'generic/platform=iOS' -derivedDataPath build \
+            -skipPackagePluginValidation -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee build.log | grep -E "^(\*\*|.*(error|warning): )" | grep -v "/SourcePackages/" || true
+          test -d build/Build/Products/Release-iphoneos/SwissRuDe.app
+
+      - name: Show compile errors
+        if: failure()
+        working-directory: ios
+        run: |
+          grep -E "error:|fatal error|BUILD FAILED|The following build commands failed" build.log | sort -u | head -80 || true
+          tail -40 build.log || true
+
+      - name: Package .ipa
+        working-directory: ios
+        run: |
+          APP=build/Build/Products/Release-iphoneos/SwissRuDe.app
+          GROUP=$(/usr/libexec/PlistBuddy -c "Print :AppGroupID" "$APP/Info.plist")
+          cat > ent.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>com.apple.security.application-groups</key><array><string>$GROUP</string></array>
+          </dict></plist>
+          EOF
+          # Embed the entitlements (App Group) so that sideloading tools keep them.
+          for BIN in "$APP/PlugIns/SwissRuDeBroadcast.appex/SwissRuDeBroadcast" "$APP/SwissRuDe"; do
+            ldid -Sent.plist "$BIN" || echo "::warning::ldid failed for $BIN"
+          done
+          mkdir -p Payload && cp -R "$APP" Payload/
+          zip -qry SwissRuDe-unsigned.ipa Payload
+          ls -lh SwissRuDe-unsigned.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SwissRuDe-ipa
+          path: ios/SwissRuDe-unsigned.ipa
+          retention-days: 30
