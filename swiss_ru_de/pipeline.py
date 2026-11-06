@@ -244,12 +244,14 @@ class LivePipeline:
                 break
             if len(batch) > 2 and not self._lag_warned:
                 self._lag_warned = True
-                self.on_status("Recognition is slower than real time; merging sentences. "
-                               "A GPU, --model swiss-turbo-int8 or turning off the dialect "
-                               "line helps.")
+                self.on_status("This PC is too slow for real time; sentences are merged to "
+                               "catch up. An NVIDIA GPU makes it about 10x faster.")
             seg = merge_segments(batch)
-            process_segment(seg.start, seg.end, seg.audio, self.transcriber,
-                            self.dialect_transcriber if self.options.dialect else None,
+            # The dialect line costs a second speech-model pass. It is "best effort": only
+            # done when no other speech is waiting, so the translation never falls behind.
+            idle = self.segments.empty() and self._carry is None
+            dialect = self.dialect_transcriber if self.options.dialect and idle else None
+            process_segment(seg.start, seg.end, seg.audio, self.transcriber, dialect,
                             self.book, self.worker, self.options.target, self.on_status)
 
 

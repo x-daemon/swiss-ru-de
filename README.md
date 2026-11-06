@@ -143,13 +143,36 @@ swiss-ru-de --to both --dialect berner-oberland
 
 ## Speed
 
-* **NVIDIA GPU:** the tool uses it automatically when CUDA 12 and cuDNN 9 are installed.
-  On Windows, put the [cuBLAS/cuDNN DLLs](https://github.com/Purfview/whisper-standalone-win/releases/tag/libs)
-  next to `python.exe` or on `PATH`. To force the GPU, use `--gpu`.
-* **CPU only:** this works. Expect a few seconds of delay per sentence. `--model swiss-turbo-int8`
-  and the default `--beam 1` are the fastest settings.
+How fast this runs depends almost entirely on whether there is an **NVIDIA graphics card**:
+
+| Hardware | Delay per sentence |
+|---|---|
+| NVIDIA GPU (GeForce RTX, …) | well under a second, about 10x faster than CPU |
+| Modern CPU only | a few seconds |
+
+* **GPU:** `start-windows.bat` detects an NVIDIA card (`nvidia-smi`) and installs the CUDA
+  libraries with pip (about 1 GB, once). Nothing else to install, apart from a current NVIDIA
+  driver. Manual install: `pip install -e ".[all,gpu]"`. Check *Settings → Run on*: `auto`
+  uses the GPU when it works.
+* **CPU only:**
+  * Live recognition uses a single decoding pass. The retry passes Whisper does on unclear
+    audio are only used for files.
+  * The dialect line (2nd model) is filled in only when no other speech is waiting, so the
+    translation never falls behind. For the fastest results, set the top part to
+    *Standard German*.
+  * The offline translator is converted to CTranslate2 int8 on first use. It is about 3x
+    faster and leaves the CPU to speech recognition. Claude and DeepL use no local CPU at all.
 * `--to de` skips translation entirely.
 * `--pause-ms 400` shows sentences sooner, but cuts them more often.
+
+## Translation quality
+
+The offline translator is free, but translates literally. For example it turns *Zmorge*
+(breakfast) into "tomorrow". Common Swiss words (Zmorge, Velo, Natel, Gipfeli, Spital, …) are
+replaced by Standard German before it translates, which helps somewhat. The real fix is
+**Claude** (best: uses the earlier sentences, knows Swiss words, corrects recognition errors)
+or **DeepL**. Paste a key in *Settings → Claude API key / DeepL API key*. It is stored in the
+Windows Credential Manager, not in a file.
 
 ## Platform notes
 

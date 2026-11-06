@@ -125,8 +125,41 @@ def _find_ct2_dir(root: str) -> str | None:
     return None
 
 
+def add_nvidia_libraries() -> list[str]:
+    """Make CUDA libraries installed with pip (the ``gpu`` extra: nvidia-cublas-cu12,
+    nvidia-cudnn-cu12) findable for CTranslate2. Returns the folders that were added."""
+    try:
+        import nvidia  # namespace package of the pip CUDA wheels
+    except ImportError:
+        return []
+    added = []
+    for root in getattr(nvidia, "__path__", []):
+        for lib in ("cublas", "cudnn", "cuda_runtime", "cuda_nvrtc"):
+            folder = os.path.join(root, lib, "bin" if sys.platform == "win32" else "lib")
+            if not os.path.isdir(folder):
+                continue
+            added.append(folder)
+            if sys.platform == "win32":
+                os.environ["PATH"] = folder + os.pathsep + os.environ.get("PATH", "")
+                try:
+                    os.add_dll_directory(folder)
+                except OSError:
+                    pass
+            else:  # Linux: preload so that CTranslate2's dlopen() finds them
+                import ctypes
+                import glob
+
+                for so in sorted(glob.glob(os.path.join(folder, "*.so*")), key=lambda p: "Lt" not in p):
+                    try:
+                        ctypes.CDLL(so, mode=ctypes.RTLD_GLOBAL)
+                    except OSError:
+                        pass
+    return added
+
+
 def pick_device(requested: str) -> str:
     """'auto' -> 'cuda' only when an NVIDIA GPU *and* the CUDA libraries are usable."""
+    add_nvidia_libraries()
     if requested != "auto":
         return requested
     try:
@@ -204,7 +237,11 @@ class Transcriber:
             self.model = load("cpu", "int8")
         log(f"Speech model ready on {self.device.upper()}.")
 
-    def _options(self, beam_size: int) -> dict:
+    def _options(self, beam_size: int, live: bool = False) -> dict:
+        # Live: one decoding pass only. The temperature fallback re-decodes up to 3 more
+        # times whenever the model is unsure - which is often the case for dialect - and
+        # made live recognition several times slower. Files keep it (accuracy first).
+        temperature = 0.0 if live else [0.0, 0.2, 0.4, 0.6]
         return dict(
             language="de",  # Whisper has no Swiss German token; output is Standard German
             task="transcribe",
@@ -212,7 +249,7 @@ class Transcriber:
             vad_filter=True,
             vad_parameters={"min_silence_duration_ms": 500, "speech_pad_ms": 200},
             condition_on_previous_text=False,  # avoids repetition loops
-            temperature=[0.0, 0.2, 0.4, 0.6],
+            temperature=temperature,
             no_speech_threshold=0.6,
             log_prob_threshold=-1.0,
             compression_ratio_threshold=2.4,
@@ -223,7 +260,7 @@ class Transcriber:
     def transcribe(self, audio: np.ndarray) -> str:
         """Transcribe one short utterance (live mode)."""
         segments, _ = self.model.transcribe(
-            audio, without_timestamps=True, **self._options(self.beam_size)
+            audio, without_timestamps=True, **self._options(self.beam_size, live=True)
         )
         parts = [clean_text(s.text) for s in segments if s.no_speech_prob < 0.8]
         text = clean_text(" ".join(p for p in parts if not is_hallucination(p)))

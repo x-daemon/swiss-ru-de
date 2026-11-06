@@ -34,7 +34,7 @@ def test_auto_picks_deepl_then_offline(monkeypatch):
 
 def test_deepl_without_key_is_a_clear_error(monkeypatch):
     monkeypatch.delenv("DEEPL_AUTH_KEY", raising=False)
-    with pytest.raises(TranslationError, match="DEEPL_AUTH_KEY"):
+    with pytest.raises(TranslationError, match="DeepL key in Settings"):
         make_translator("deepl", "ru")
 
 

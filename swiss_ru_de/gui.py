@@ -375,6 +375,9 @@ class App:
             if self.pipeline:
                 self.pipeline.dialect_transcriber = tr
             self.status("Ready - listening." if self.pipeline else "Dialect model ready.")
+            if self.transcriber is not None and self.transcriber.device == "cpu":
+                self.status("Running on the CPU: the dialect line is filled in when the CPU is "
+                            "free. An NVIDIA graphics card makes it about 10x faster.")
 
     def _new_source(self):
         from .audio import SoundcardSource
@@ -497,7 +500,7 @@ class SettingsDialog:
         ttk.Radiobutton(f, text="Swiss German as spoken (dialect)", value="dialect",
                         variable=self.top).pack(anchor="w")
         ttk.Radiobutton(f, text="Standard German", value="german", variable=self.top).pack(anchor="w")
-        field("Show", f, "The dialect line uses a second speech model (slower on CPU).")
+        field("Show", f, "Uses a 2nd speech model; on a CPU it is filled in when there is time.")
         self.dialect_labels = {k: (f"{k} – {v}" if v else "auto – any dialect") for k, v in DIALECTS.items()}
         self.dialect = ttk.Combobox(win, state="readonly", width=48,
                                     values=list(self.dialect_labels.values()))
@@ -505,16 +508,17 @@ class SettingsDialog:
         field("Dialect", self.dialect, "Optional: helps dialect spelling and translation.")
 
         head("TRANSLATION")
-        keys = []
-        if os.environ.get("ANTHROPIC_API_KEY"):
-            keys.append("Claude key found")
-        if os.environ.get("DEEPL_AUTH_KEY"):
-            keys.append("DeepL key found")
         self.translator = ttk.Combobox(win, state="readonly", width=48,
                                        values=["auto", "claude", "deepl", "offline"])
         self.translator.set(s.translator)
         field("Translator", self.translator,
-              ", ".join(keys) if keys else "No API key set: auto uses the offline model.")
+              "auto = Claude if its key is set, else DeepL, else offline (lowest quality).")
+        self.claude_key = tk.StringVar()
+        self.deepl_key = tk.StringVar()
+        field("Claude API key", ttk.Entry(win, textvariable=self.claude_key, show="•", width=50),
+              self._key_note("anthropic", "console.anthropic.com - best translation"))
+        field("DeepL API key", ttk.Entry(win, textvariable=self.deepl_key, show="•", width=50),
+              self._key_note("deepl", "deepl.com/pro-api - free key available"))
 
         head("AUDIO")
         speakers, mics = device_names()
@@ -557,6 +561,30 @@ class SettingsDialog:
         win.geometry(f"+{max(0, x)}+{max(0, y)}")
         win.grab_set()
 
+    @staticmethod
+    def _key_note(name: str, where: str) -> str:
+        from . import keys
+
+        if os.environ.get(keys.ENV[name]):
+            return f"Set by the {keys.ENV[name]} environment variable."
+        if keys.saved_in_keychain(name):
+            return "Saved. Type a new key to replace it, or a single - to remove it."
+        return f"Not set. Get one at {where}."
+
+    def save_keys(self) -> bool:
+        """Store typed keys in the system keychain. True if anything changed."""
+        from . import keys
+
+        changed = False
+        for name, var in (("anthropic", self.claude_key), ("deepl", self.deepl_key)):
+            value = var.get().strip()
+            if not value:
+                continue
+            if not keys.set_key(name, "" if value == "-" else value):
+                self.app.status("Could not save the API key: no system keychain available.")
+            changed = True
+        return changed
+
     def values(self) -> Settings:
         s = self.app.s
         dialect = next(k for k, v in self.dialect_labels.items() if v == self.dialect.get())
@@ -571,6 +599,8 @@ class SettingsDialog:
                        model=self.model.get().strip() or s.model, compute=self.compute.get())
 
     def save(self) -> None:
+        if self.save_keys():
+            self.app.hub.reset()  # recreate translators with the new keys
         new = self.values()
         self.win.destroy()
         self.app.apply_settings(new)
