@@ -29,6 +29,14 @@ PC audio ─► pause detection ─┬► Whisper fine-tuned on Swiss German ─
 * **Simple.** Double-click to start. Besides the two-part window, there is a compact
   always-on-top subtitle strip (`--overlay`), terminal output, and `.srt` or `.txt` export.
 
+## iPhone
+
+There is also an iPhone app with the same two-part screen. It runs speech recognition on the
+iPhone itself and listens to the microphone, to other apps on the iPhone (YouTube, …) or to
+files. It can show floating captions over other apps. See **[ios/README.md](ios/README.md)**
+for installing it with Xcode, or with Sideloadly on Windows using the `.ipa` built by
+GitHub Actions.
+
 ## Install
 
 **Windows:** install [Python 3.10+](https://www.python.org/downloads/) and tick *"Add python.exe
