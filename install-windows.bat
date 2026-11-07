@@ -21,17 +21,27 @@ echo  Keep this window open until it says "Done".
 echo.
 
 rem ---------------------------------------------------------------- 1. Python
+rem The newest Python is often too new for the speech libraries (onnxruntime, ctranslate2,
+rem torch need a few months to support it), so pick 3.12 first, then 3.13, 3.11, 3.10.
 echo [1/6] Python ...
 set "PY="
-py -3 -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>nul && set "PY=py -3"
-if not defined PY python -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>nul && set "PY=python"
+for %%v in (3.12 3.13 3.11 3.10) do (
+    if not defined PY py -%%v -c "import sys" >nul 2>nul && set "PY=py -%%v"
+)
+if not defined PY python -c "import sys; sys.exit(0 if (3, 10) <= sys.version_info[:2] <= (3, 13) else 1)" >nul 2>nul && set "PY=python"
 if not defined PY (
     echo       Installing Python 3.12 ...
     winget install -e --id Python.Python.3.12 --scope user --accept-source-agreements --accept-package-agreements
     if exist "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" set PY="%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
 )
 if not defined PY goto :nopython
-echo       OK
+%PY% -c "import sys; print('      Using Python', sys.version.split()[0])"
+if exist ".venv\Scripts\python.exe" (
+    ".venv\Scripts\python.exe" -c "import sys; sys.exit(0 if (3, 10) <= sys.version_info[:2] <= (3, 13) else 1)" >nul 2>nul || (
+        echo       The existing .venv uses an unsupported Python - rebuilding it ...
+        rmdir /s /q .venv
+    )
+)
 
 rem ------------------------------------------------------ 2. App and packages
 echo.

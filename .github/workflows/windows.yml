@@ -22,6 +22,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The runner's default Python is the newest release (no onnxruntime wheels yet);
+      # the installer must pick a supported one - provide 3.12 like on a typical PC.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Run install-windows.bat
         shell: cmd
         run: install-windows.bat
