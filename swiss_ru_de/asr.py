@@ -210,7 +210,9 @@ class Transcriber:
         self.prompt = prompt  # style prompt; used by the dialect transcriber
         self.log = log
         self.device = pick_device(device)
-        compute_type = compute_type or ("float16" if self.device == "cuda" else "int8")
+        # GPU: int8 weights with float16 maths - half the graphics memory of float16, so a
+        # local AI translation model (Ollama) still fits next to the speech models.
+        compute_type = compute_type or ("int8_float16" if self.device == "cuda" else "int8")
         threads = max(4, (os.cpu_count() or 8) // 2)
 
         try:

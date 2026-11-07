@@ -104,10 +104,52 @@ def test_hub_passes_the_chosen_model():
     keys.set_key("openai", "o")
     hub = TranslatorHub("openai", openai_model="gpt-6-sol")
     assert hub.get("ru").model == "gpt-6-sol"
-    assert set(PROVIDERS) == {"openai", "gemini", "grok"}
+    assert set(PROVIDERS) == {"openai", "gemini", "grok", "local"}
     assert translate.QUALITY_LABEL["grok"].startswith("Grok")
 
 
 def test_gemini_key_from_google_api_key(monkeypatch):
     monkeypatch.setenv("GOOGLE_API_KEY", "g-env")
     assert keys.get_key("gemini") == "g-env"
+
+
+def test_local_ai_needs_no_key_and_uses_the_local_server():
+    t = OpenAICompatibleTranslator("local", base_url="http://localhost:1234/v1")
+    assert t.model == "gemma3:12b" and t.corrects
+    assert str(t.client.base_url).startswith("http://localhost:1234/v1")
+    hub = TranslatorHub("local", local_model="qwen3:14b", local_url="http://127.0.0.1:11434/v1")
+    tr = hub.get("ru")
+    assert tr.model == "qwen3:14b" and tr.base_url == "http://127.0.0.1:11434/v1"
+    assert isinstance(hub.get("de"), OpenAICompatibleTranslator)  # corrects German too
+    assert resolve_kind("auto") != "local"  # never chosen automatically
+
+
+def test_local_errors_explain_what_to_do():
+    t, _ = make_local([ConnectionError("refused")])
+    with pytest.raises(TranslationError, match="Start Ollama"):
+        t.process("x")
+    t, _ = make_local([LookupError("model not found")])
+    with pytest.raises(TranslationError, match="ollama pull gemma3:12b"):
+        t.process("x")
+
+
+def test_thinking_is_ignored_and_translation_models_get_a_plain_prompt():
+    t, fake = make_local(['<think>{"german": "no"}</think>{"german": "Ja.", "russian": "Да."}'])
+    assert t.process("Ja") == ("Ja.", "Да.")
+    t = OpenAICompatibleTranslator("local", model="translategemma:12b")
+    t._openai = FAKE_ERRORS
+    fake = FakeCompletions(["<think>hm</think>Два круассана."])
+    t.client = SimpleNamespace(chat=SimpleNamespace(completions=fake))
+    assert not t.corrects
+    assert t.process("Zwei Gipfeli.") == (None, "Два круассана.")
+    assert "response_format" not in fake.calls[0]
+    assert "Croissants" in fake.calls[0]["messages"][0]["content"]  # Swiss words normalised
+    assert t.process("Zwei Gipfeli.", target="de") == (None, None)
+
+
+def make_local(answers):
+    t = OpenAICompatibleTranslator("local")
+    t._openai = FAKE_ERRORS
+    fake = FakeCompletions(answers)
+    t.client = SimpleNamespace(chat=SimpleNamespace(completions=fake))
+    return t, fake

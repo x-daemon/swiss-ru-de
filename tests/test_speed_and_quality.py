@@ -110,7 +110,8 @@ def test_offline_falls_back_to_pytorch_when_ct2_fails(monkeypatch):
 
     t._ct2 = SimpleNamespace(translate_batch=broken)
     monkeypatch.setattr(OfflineTranslator, "_load_torch", lambda self: None)
-    monkeypatch.setattr(OfflineTranslator, "_translate_torch", lambda self, text: f"torch:{text}")
+    monkeypatch.setattr(OfflineTranslator, "_translate_torch",
+                        lambda self, sentences: [f"torch:{s}" for s in sentences])
     assert t.translate("Velo") == "torch:Fahrrad"
     assert t._ct2 is None  # stays on PyTorch afterwards
 
@@ -160,10 +161,35 @@ def test_offline_translator_uses_context_for_gipfel(monkeypatch):
     t = make_offline()
     seen = {}
     t._ct2 = None
-    monkeypatch.setattr(OfflineTranslator, "_translate_torch", lambda self, text: seen.setdefault("t", text))
+    monkeypatch.setattr(OfflineTranslator, "_translate_torch",
+                        lambda self, sentences: seen.setdefault("t", sentences))
     t.translate("Zwei Gipfel bitte.", ["Ich hätte gern einen Kaffee."])
-    assert seen["t"] == "Zwei Croissants bitte."
+    assert seen["t"] == ["Zwei Croissants bitte."]
 
 
 def test_claude_prompt_knows_gipfel_at_breakfast():
     assert "misrecognised \"Gipfeli\"" in translate.CLAUDE_SYSTEM
+
+
+def test_offline_translates_sentence_by_sentence():
+    t = make_offline()
+    calls = {}
+
+    def translate_batch(batch, target_prefix=None, **options):
+        calls["n"] = len(batch)
+        return [SimpleNamespace(hypotheses=[["rus_Cyrl", f"S{i}"]]) for i in range(len(batch))]
+
+    t._ct2 = SimpleNamespace(translate_batch=translate_batch)
+    text = ("Und wo essen Sie nie etwas zum Morgen? Ich schätze nichts am Morgen. "
+            "Müsli und Zopf mit Honig. Und du? Ein Joghurt.")
+    t.translate(text)
+    assert calls["n"] == 5  # nothing is dropped: every sentence is translated
+
+
+def test_split_and_breakfast_rules():
+    from swiss_ru_de.translate import split_sentences
+
+    assert split_sentences("Blutorange. Ein Blutorange? Nicht mehr.") == ["Blutorange.", "Ein Blutorange?", "Nicht mehr."]
+    assert split_sentences("Er kam um 3.5 Uhr. z.B. heute. Ja!") == ["Er kam um 3.5 Uhr. z.B. heute.", "Ja!"]
+    assert normalize_swiss_terms("Weil ich nie zum Morgen esse.") == "Weil ich nie zum Frühstück esse."
+    assert normalize_swiss_terms("Ich stehe am Morgen früh auf.") == "Ich stehe am Morgen früh auf."

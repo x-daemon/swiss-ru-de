@@ -110,10 +110,11 @@ double-click or press Esc to close it.
 | **ChatGPT** (OpenAI) | very good | platform.openai.com → API keys | `gpt-6-luna` (fast, cheap); `gpt-6-sol`, `gpt-6-astra` are stronger |
 | **Gemini** (Google) | very good | aistudio.google.com → Get API key | `gemini-3.8-flash`; `gemini-3.5-flash-lite` is cheapest |
 | **Grok** (xAI) | very good | console.x.ai → API keys | `grok-4.7` |
+| **Local AI** (Ollama / LM Studio) | good to very good, **stays on your PC** | no key | `gemma3:12b`; `gemma3:4b` is smaller; `translategemma:12b` translates only |
 | **DeepL** | good | deepl.com/pro-api (free key available) | – |
 | **offline** | basic | no key | NLLB-200, runs on your PC |
 
-The four AI models (Claude, ChatGPT, Gemini, Grok) do more than translate:
+The AI models (Claude, ChatGPT, Gemini, Grok, local AI) do more than translate:
 
 * they also **correct recognition errors**, using the dialect line as a second hearing and the
   earlier sentences as context (see *Translation quality*);
@@ -130,6 +131,34 @@ schema output), the app retries without it and remembers that.
 On the command line use `--translator claude|openai|gemini|grok|deepl|offline`, with
 `--translator-model <id>` to pick the model and the environment variables `ANTHROPIC_API_KEY`,
 `OPENAI_API_KEY`, `GEMINI_API_KEY` (or `GOOGLE_API_KEY`), `XAI_API_KEY` or `DEEPL_AUTH_KEY`.
+
+### Everything local: AI translation on your graphics card
+
+With an NVIDIA card (8 GB or more), a local AI model can do Claude's job without any cloud.
+It corrects the recognised German and translates with context, and nothing leaves the PC.
+
+1. Install **[Ollama](https://ollama.com)** (Windows installer). It runs in the background.
+2. In a terminal, download the model (once, about 8 GB):
+   ```bash
+   ollama pull gemma3:12b
+   ```
+3. In *Settings → Translator*, choose **Local AI on this PC**. The model list shows the models
+   Ollama has installed; pick `gemma3:12b` and save.
+
+Notes:
+
+* **Graphics memory:** the speech models now run in `int8_float16` on the GPU, half the
+  memory of before, so a 12 GB card holds both them and `gemma3:12b`. With 8 GB, use
+  `gemma3:4b`.
+* **First sentence:** it takes a few seconds while Ollama loads the model.
+* **LM Studio** works too: start its local server and set *Server* to
+  `http://localhost:1234/v1`.
+* **Translation-only models** such as `translategemma:12b` get a plain translation prompt. They
+  don't correct recognition errors.
+
+The free **offline** translator (NLLB) now translates **sentence by sentence**, because given
+several sentences at once it dropped most of them. It also reads *zum Morgen* as *Zmorge*
+(breakfast).
 
 ## Dialects and accuracy tips
 

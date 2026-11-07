@@ -137,7 +137,8 @@ class App:
         self.hub = TranslatorHub(settings.translator, settings.claude_model or None,
                                  settings.offline_model, settings.dialect, log=self.status,
                                  openai_model=settings.openai_model, gemini_model=settings.gemini_model,
-                                 grok_model=settings.grok_model)
+                                 grok_model=settings.grok_model, local_model=settings.local_model,
+                                 local_url=settings.local_url)
         self.book = LineBook(on_update=lambda line: self.events.put(("line", line)))
         self.lines: dict[int, Line] = {}
         self.transcriber = None
@@ -210,7 +211,7 @@ class App:
         kind = resolve_kind(self.s.translator)
         if self.s.target != "de":
             subtitle += " · " + QUALITY_LABEL.get(kind, "")
-        elif kind in ("claude", "openai", "gemini", "grok"):
+        elif kind in ("claude", "openai", "gemini", "grok", "local"):
             subtitle += " · corrected by " + QUALITY_LABEL[kind].split(",")[0]
         self.bottom.set_titles(title, subtitle)
 
@@ -334,12 +335,14 @@ class App:
             self._apply_tuning()
             self._needs_restart = True  # new segment length
         self.options.dialect = self._dialect_wanted()
-        translation = ("translator", "dialect", "claude_model", "openai_model", "gemini_model", "grok_model")
+        translation = ("translator", "dialect", "claude_model", "openai_model", "gemini_model",
+                       "grok_model", "local_model", "local_url")
         if any(getattr(new, f) != getattr(old, f) for f in translation):
             self.hub.configure(kind=new.translator, dialect=new.dialect,
                                claude_model=new.claude_model or None,
                                openai_model=new.openai_model or None,
-                               gemini_model=new.gemini_model or None, grok_model=new.grok_model or None)
+                               gemini_model=new.gemini_model or None, grok_model=new.grok_model or None,
+                               local_model=new.local_model or None, local_url=new.local_url or None)
         if self.dialect_transcriber is not None:
             from .asr import dialect_prompt
 
@@ -606,20 +609,22 @@ class SettingsDialog:
 
         self.kinds = {"auto - best one with a key": "auto", "Claude (Anthropic)": "claude",
                       "ChatGPT (OpenAI)": "openai", "Gemini (Google)": "gemini", "Grok (xAI)": "grok",
+                      "Local AI on this PC (Ollama / LM Studio)": "local",
                       "DeepL": "deepl", "offline - free, basic quality": "offline"}
         self.translator = ttk.Combobox(win, state="readonly", width=34, values=list(self.kinds))
         self.translator.set(next((k for k, v in self.kinds.items() if v == s.translator),
                                  list(self.kinds)[0]))
         field("Translator", self.translator,
-              "Claude, ChatGPT, Gemini and Grok also correct recognition errors.")
+              "The AI models (Claude, ChatGPT, Gemini, Grok, local AI) also correct recognition errors.")
         self.api_key = tk.StringVar()
         self.key_entry = ttk.Entry(win, textvariable=self.api_key, show="•", width=36)
-        _, self.key_note_label = field("API key", self.key_entry, " ")
+        self.key_label, self.key_note_label = field("API key", self.key_entry, " ")
         self.llm_model = ttk.Combobox(win, width=34)  # editable: any model id works
         _, self.model_note_label = field("Model", self.llm_model, " ")
         self.typed_keys: dict[str, str] = {}
         self.models = {"claude": s.claude_model or "claude-opus-5-5",
                        **{p: getattr(s, f"{p}_model") or info["models"][0] for p, info in PROVIDERS.items()}}
+        self.local_url = s.local_url or PROVIDERS["local"]["base_url"]
         self._shown: str | None = None
         self.translator.bind("<<ComboboxSelected>>", lambda e: self._show_translator())
         self._show_translator()
@@ -704,16 +709,32 @@ class SettingsDialog:
         "openai": "gpt-6-luna = fast and cheap, gpt-6-sol / gpt-6-astra = stronger.",
         "gemini": "gemini-3.8-flash = fast, gemini-3.5-flash-lite = cheapest.",
         "grok": "grok-4.7",
+        "local": "Install Ollama (ollama.com), then in a terminal: ollama pull gemma3:12b "
+                 "(8 GB, fits next to the speech models on a 12 GB graphics card). "
+                 "Smaller: gemma3:4b. Translation only: translategemma:12b.",
     }
 
     def _show_translator(self) -> None:
         """Show the API key and model fields of the selected translator."""
         from .translate import PROVIDERS, QUALITY_LABEL, resolve_kind
 
+        from .translate import LOCAL_SERVERS, local_models
+
         self._stash()
         kind = self.kinds[self.translator.get()]
         key_name = self.KEY_NAMES.get(kind)
-        if key_name:
+        self.key_label.configure(text="Server" if kind == "local" else "API key")
+        self.key_entry.configure(show="" if kind == "local" else "•")
+        installed: list[str] = []
+        if kind == "local":
+            self.key_entry.configure(state="normal")
+            self.api_key.set(self.local_url)
+            installed = local_models(self.local_url)
+            servers = ", ".join(f"{k}: {v}" for k, v in LOCAL_SERVERS.items())
+            state = (f"Running, {len(installed)} model(s) installed." if installed
+                     else "Not running - start Ollama (or LM Studio's server).")
+            self.key_note_label.configure(text=f"{state} {servers}")
+        elif key_name:
             where = PROVIDERS[kind]["where"] if kind in PROVIDERS else {
                 "claude": "console.anthropic.com", "deepl": "deepl.com/pro-api - free key available"}[kind]
             self.key_entry.configure(state="normal")
@@ -726,7 +747,8 @@ class SettingsDialog:
                 text=f"auto uses now: {QUALITY_LABEL.get(resolve_kind('auto'), '')}" if kind == "auto"
                 else "No key needed.")
         if kind in self.models:
-            values = ["claude-opus-5-5", "claude-haiku-5-5"] if kind == "claude" else PROVIDERS[kind]["models"]
+            values = (["claude-opus-5-5", "claude-haiku-5-5"] if kind == "claude"
+                      else installed or PROVIDERS[kind]["models"])
             self.llm_model.configure(state="normal", values=values)
             self.llm_model.set(self.models[kind])
             self.model_note_label.configure(text=self.MODEL_NOTES[kind])
@@ -740,6 +762,8 @@ class SettingsDialog:
         """Remember what was typed for the translator shown so far."""
         if self._shown in self.KEY_NAMES:
             self.typed_keys[self._shown] = self.api_key.get()
+        if self._shown == "local":
+            self.local_url = self.api_key.get().strip() or self.local_url
         if self._shown in self.models:
             self.models[self._shown] = self.llm_model.get().strip() or self.models[self._shown]
 
@@ -774,6 +798,7 @@ class SettingsDialog:
                        recognizer=self.recognizers[self.recognizer.get()], speed=self.speed.get(),
                        claude_model=self.models["claude"], openai_model=self.models["openai"],
                        gemini_model=self.models["gemini"], grok_model=self.models["grok"],
+                       local_model=self.models["local"], local_url=self.local_url,
                        azure_region=self.azure_region.get().strip() or "switzerlandnorth")
 
     def speed_check(self) -> None:

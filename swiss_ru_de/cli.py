@@ -58,11 +58,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     tr = p.add_argument_group("translation")
     tr.add_argument("--translator", default="auto",
-                    choices=["auto", "claude", "openai", "gemini", "grok", "deepl", "offline"],
+                    choices=["auto", "claude", "openai", "gemini", "grok", "local", "deepl", "offline"],
                     help="auto = the first with a key: Claude (ANTHROPIC_API_KEY), ChatGPT "
                          "(OPENAI_API_KEY), Gemini (GEMINI_API_KEY), Grok (XAI_API_KEY), DeepL "
                          "(DEEPL_AUTH_KEY), else offline")
     tr.add_argument("--claude-model", default=None, help="Claude model id (default claude-opus-5-5)")
+    tr.add_argument("--local-url", default="http://localhost:11434/v1",
+                    help="--translator local: Ollama (default) or LM Studio (http://localhost:1234/v1)")
     tr.add_argument("--translator-model", default=None,
                     help="model id for --translator openai/gemini/grok (default: the provider's "
                          "fast model, e.g. gpt-6-luna, gemini-3.8-flash, grok-4.7)")
@@ -137,8 +139,9 @@ def main(argv: list[str] | None = None) -> int:
     from .translate import TranslationError, TranslatorHub
 
     hub = TranslatorHub(args.translator, args.claude_model, args.offline_model, args.dialect, log=log,
+                        local_url=args.local_url,
                         **({f"{args.translator}_model": args.translator_model}
-                           if args.translator in ("openai", "gemini", "grok") else {}))
+                           if args.translator in ("openai", "gemini", "grok", "local") else {}))
     if args.to != "de":
         try:
             log(f"Translation: {hub.get(args.to).name}")  # fail early, e.g. missing API key

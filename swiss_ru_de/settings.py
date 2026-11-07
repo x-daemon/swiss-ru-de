@@ -31,6 +31,8 @@ class Settings:
     openai_model: str = ""  # "" = provider default (translate.PROVIDERS)
     gemini_model: str = ""
     grok_model: str = ""
+    local_model: str = ""  # Ollama / LM Studio model, "" = gemma3:12b
+    local_url: str = "http://localhost:11434/v1"
     offline_model: str = DEFAULT_OFFLINE_MODEL
     geometry: str = ""  # window size/position, remembered
 
