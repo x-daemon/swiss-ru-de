@@ -106,7 +106,7 @@ double-click or press Esc to close it.
 
 | `--translator` | Quality | Needs | Notes |
 |---|---|---|---|
-| `claude` | best | `ANTHROPIC_API_KEY` | Uses the previous sentences as context, fixes obvious recognition errors, handles leftover dialect words (*öppis, gäll, lueg …*). Default model `claude-opus-5-5` at low effort. Use `--claude-model claude-haiku-5-5` for lower cost and latency. |
+| `claude` | best | Claude API key (Settings) | Uses the previous sentences as context, fixes obvious recognition errors, handles leftover dialect words (*öppis, gäll, lueg …*). Default model `claude-opus-5-5` at low effort. Use `--claude-model claude-haiku-5-5` for lower cost and latency. |
 | `deepl` | very good | `DEEPL_AUTH_KEY` | The [free API key](https://www.deepl.com/pro-api) covers 500 000 characters/month. |
 | `offline` | good | nothing | NLLB-200 600M runs locally. Nothing leaves your PC. |
 
@@ -192,6 +192,20 @@ are missing.
   1 GB, once). Manual install: `pip install -e ".[all,gpu]"`.
 
 ## Translation quality
+
+**With Claude, recognition errors are corrected too.** Claude can't listen to audio: the
+Claude API accepts text and images only, so speech recognition stays on your PC (Whisper on
+the GPU or CPU), or optionally Azure. For each sentence Claude gets:
+
+* the recognised Standard German;
+* the dialect line, as a second hearing of the same audio (it waits for it at most 1.5 s);
+* the previous sentences.
+
+It returns the **corrected German sentence and its translation** in one request (JSON
+output). Misheard words are fixed (*Gipfel* at breakfast → *Gipfeli*), and the corrected
+German is what the window, the transcript and the next sentence's context use. With the
+bottom part set to *Hochdeutsch*, Claude only corrects the German.
+
 
 The bottom header shows which translator is active (e.g. *перевод · offline, basic
 quality*). The offline translator is free, but translates literally. For example it turns *Zmorge*

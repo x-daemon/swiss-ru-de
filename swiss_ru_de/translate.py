@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -109,9 +110,17 @@ class TranslationError(RuntimeError):
 
 class Translator:
     name = "none"
+    corrects = False  # True if it can also fix recognition errors (Claude)
 
     def translate(self, text: str, context: Sequence[str] = ()) -> str:
         raise NotImplementedError
+
+    def process(self, german: str, dialect: str | None = None, context: Sequence[str] = (),
+                target: str = "ru") -> tuple[str | None, str | None]:
+        """Returns (corrected German or None, translation or None)."""
+        if target == "de":
+            return None, None
+        return None, self.translate(german, context)
 
 
 class Passthrough(Translator):
@@ -124,14 +133,7 @@ class Passthrough(Translator):
 
 
 # ----------------------------------------------------------------------- Claude
-CLAUDE_SYSTEM = """You translate live subtitles into Russian.
-
-The audio is Swiss German. A speech recogniser has already converted it into Standard German, \
-sentence by sentence. Its output can contain recognition mistakes, missing punctuation, or \
-dialect words it did not convert (for example: öppis, gsi, lueg, äbe, gäll, merci vilmal, \
-Chuchichäschtli, Grüessech, Grüezi, ade, hoi, zäme, nöd, nüt, chli, gönd, gang).
-
-Typical traps, translate the meaning:
+_SWISS_HINTS = """Typical traps - use the meaning:
 - "zum Morgen", "Zmorge" = breakfast (Frühstück), not "tomorrow"; "Zmittag" = lunch; \
 "Znacht" = dinner; "Zvieri"/"Znüni" = snack.
 - Gipfeli = croissant. When people talk about breakfast, coffee or a bakery, "Gipfel" in the \
@@ -143,14 +145,38 @@ Rüebli = carrots, Härdöpfel = potatoes, Poulet = chicken, Glace = ice cream, 
 Spital = hospital, Billett = ticket, Trottoir = pavement, Estrich = attic, Lavabo = sink, \
 Kollege = friend/mate, Büez/Chrampf = work, poschte = to go shopping, parkieren = to park, \
 luege = to look, schaffe = to work, gäll = right?, öppe = about/sometimes.
-- Swiss German often uses the perfect tense ("ich ha gha" = I had): use natural Russian tense.
+- Swiss German often uses the perfect tense ("ich ha gha" = I had): use natural tenses."""
 
-Translate only the text under "Translate:" into natural, fluent Russian.
-- Use the earlier lines only as context; do not translate them again.
-- If a word was clearly misrecognised, translate what the speaker most likely meant.
-- Keep names, places, companies and numbers. Keep Swiss terms that have no Russian equivalent \
-in their usual form (e.g. Rösti -> рёшти).
-- Reply with the Russian translation only: no quotes, notes, or explanations."""
+CLAUDE_SYSTEM = f"""You turn live speech recognition of Swiss German into clean subtitles.
+
+For each utterance you get:
+- "Recognised": Standard German from a speech model trained on Swiss German. Usually the best \
+source for the meaning, but it can mishear or drop words, miss punctuation, leave dialect words \
+(öppis, gsi, lueg, äbe, gäll, nöd, nüt, chli, gönd, zäme, Grüezi, Grüessech, merci vilmal) or \
+turn Swiss words into the wrong Standard German word.
+- Sometimes "As heard": the same audio written closer to the dialect by a second, general \
+model. Less accurate overall, but it can keep words the first model changed.
+- Earlier lines (already corrected), for context only.
+
+{_SWISS_HINTS}
+
+Answer with JSON:
+- "german": the utterance as correct, natural Standard German. Fix clear recognition errors \
+using both versions and the context. Keep the speaker's meaning and wording otherwise; do not \
+add or summarise; keep names, places and numbers.
+- "russian" (only when the schema asks for it): a natural, fluent Russian translation of that \
+German sentence. Keep Swiss terms that have no Russian equivalent in their usual form \
+(e.g. Rösti -> рёшти)."""
+
+_SCHEMAS = {
+    target: {
+        "type": "object",
+        "properties": {"german": {"type": "string"}, **({"russian": {"type": "string"}} if target == "ru" else {})},
+        "required": ["german", "russian"] if target == "ru" else ["german"],
+        "additionalProperties": False,
+    }
+    for target in ("ru", "de")
+}
 
 # Models that accept output_config.effort / server-side refusal fallbacks.
 _EFFORT_MODELS = re.compile(r"^claude-(opus|sonnet|haiku|fable|mythos)-5|^claude-(opus-4-[678]|sonnet-4-6)")
@@ -158,7 +184,11 @@ _FALLBACK_MODELS = {"claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "cla
 
 
 class ClaudeTranslator(Translator):
+    """Corrects the recognised German (with the dialect line as a second hearing and the
+    earlier sentences as context) and translates it, in one request with JSON output."""
+
     DEFAULT_MODEL = "claude-opus-5-5"
+    corrects = True
 
     def __init__(self, model: str | None = None, dialect: str | None = None, effort: str = "low",
                  api_key: str | None = None):
@@ -180,24 +210,29 @@ class ClaudeTranslator(Translator):
         if DIALECTS.get(dialect or "auto"):
             self.system += f"\n\nThe speaker most likely speaks {DIALECTS[dialect]}."
 
-    def _request(self, text: str, context: Sequence[str]) -> dict:
+    def _request(self, german: str, dialect: str | None, context: Sequence[str], target: str) -> dict:
         prompt = ""
         if context:
             prompt += "Earlier lines (context only):\n" + "\n".join(context) + "\n\n"
-        prompt += "Translate:\n" + text
-        req: dict = dict(
+        prompt += f"Recognised: {german}"
+        if dialect and dialect.strip() and dialect.strip() != german.strip():
+            prompt += f"\nAs heard: {dialect}"
+        output_config: dict = {"format": {"type": "json_schema", "schema": _SCHEMAS[target]}}
+        if _EFFORT_MODELS.match(self.model):
+            output_config["effort"] = self.effort  # low = fastest
+        return dict(
             model=self.model,
             max_tokens=4096,
             system=self.system,
             messages=[{"role": "user", "content": prompt}],
+            output_config=output_config,
         )
-        if _EFFORT_MODELS.match(self.model):
-            req["output_config"] = {"effort": self.effort}  # low = fastest
-        return req
 
-    def translate(self, text: str, context: Sequence[str] = ()) -> str:
+    def process(self, german: str, dialect: str | None = None, context: Sequence[str] = (),
+                target: str = "ru") -> tuple[str | None, str | None]:
         a = self._anthropic
-        req = self._request(text, context)
+        target = "de" if target == "de" else "ru"
+        req = self._request(german, dialect, context, target)
         try:
             if self.model in _FALLBACK_MODELS:
                 # if a request is declined, the API retries it on a fallback model
@@ -216,9 +251,18 @@ class ClaudeTranslator(Translator):
             raise TranslationError(f"Claude API error {e.status_code}: {e.message}") from e
         except a.APIConnectionError as e:
             raise TranslationError("Cannot reach the Claude API (network)") from e
-        if resp.stop_reason == "refusal":
-            return ""
-        return "".join(b.text for b in resp.content if b.type == "text").strip()
+        if resp.stop_reason in ("refusal", "max_tokens"):
+            return None, ("" if target == "ru" else None)
+        text = next((b.text for b in resp.content if b.type == "text"), "")
+        try:
+            data = json.loads(text)
+        except ValueError:
+            return None, ("" if target == "ru" else None)
+        fixed = (data.get("german") or "").strip() or None
+        return fixed, ((data.get("russian") or "").strip() if target == "ru" else None)
+
+    def translate(self, text: str, context: Sequence[str] = ()) -> str:
+        return self.process(text, None, context, "ru")[1] or ""
 
 
 # ------------------------------------------------------------------------ DeepL
@@ -354,7 +398,7 @@ def resolve_kind(kind: str) -> str:
     return "offline"
 
 
-QUALITY_LABEL = {"claude": "Claude", "deepl": "DeepL", "offline": "offline, basic quality"}
+QUALITY_LABEL = {"claude": "Claude, corrected", "deepl": "DeepL", "offline": "offline, basic quality"}
 
 
 def make_translator(
@@ -400,8 +444,9 @@ class TranslatorHub:
             self._cache.clear()
 
     def get(self, target: str) -> Translator:
-        if target == "de":
-            return Passthrough()
+        if target == "de" and resolve_kind(self.config["kind"]) != "claude":
+            return Passthrough()  # only Claude can improve German output
+        target = "ru"  # one translator object serves both targets
         with self._lock:
             key = tuple(sorted(self.config.items()))
             if key not in self._cache:

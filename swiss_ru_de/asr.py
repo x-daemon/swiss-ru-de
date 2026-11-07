@@ -222,7 +222,7 @@ class Transcriber:
         def one_pass(m) -> float:
             started = time.perf_counter()
             segments, _ = m.transcribe(np.zeros(SAMPLE_RATE, dtype=np.float32), language="de",
-                                       beam_size=1, temperature=0.0)
+                                       beam_size=1, temperature=0.0, max_new_tokens=24)
             list(segments)
             return time.perf_counter() - started
 

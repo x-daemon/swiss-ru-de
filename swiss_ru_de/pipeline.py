@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from collections import deque
 from dataclasses import dataclass, replace
 from typing import Callable
@@ -77,6 +78,12 @@ class LineBook:
             self.on_update(snap)
         return snap
 
+    def get(self, line_id: int) -> Line | None:
+        """Current state of a line that is not finished yet."""
+        with self._lock:
+            line = self._lines.get(line_id)
+            return replace(line) if line else None
+
     def update(self, line_id: int, **fields) -> None:
         with self._lock:
             line = self._lines.get(line_id)
@@ -97,11 +104,12 @@ class TranslationWorker:
     """Translates German lines in the background, keeping a little context."""
 
     def __init__(self, translators: Callable[[str], Translator], book: LineBook,
-                 on_status: OnStatus, context_lines: int = 3):
+                 on_status: OnStatus, context_lines: int = 3, dialect_wait: float = 1.5):
         self.translators = translators
         self.book = book
         self.on_status = on_status
         self.context: deque[str] = deque(maxlen=context_lines)
+        self.dialect_wait = dialect_wait
         self.q: queue.Queue = queue.Queue()
         self._last_error = ""
         self.thread = threading.Thread(target=self._run, name="translate", daemon=True)
@@ -123,21 +131,36 @@ class TranslationWorker:
             self._last_error = msg
             self.on_status(f"Translation failed: {msg}")
 
+    def _dialect_of(self, line: Line) -> str | None:
+        """The dialect line is a second hearing of the same audio; Claude uses it to fix
+        recognition errors. Wait a moment for it - but never long."""
+        deadline = time.monotonic() + self.dialect_wait
+        while True:
+            current = self.book.get(line.id)
+            if current is None or not current.dialect_pending:
+                return current.dialect if current else None
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(0.05)
+
     def _run(self) -> None:
         while (line := self.q.get()) is not _STOP:
-            text = None
-            if line.target != "de":
-                try:
-                    text = self.translators(line.target).translate(line.german, list(self.context))
-                    self._last_error = ""
-                except TranslationError as e:
-                    text = ""
-                    self._error(str(e))
-                except Exception as e:  # keep the subtitles running whatever happens
-                    text = ""
-                    self._error(repr(e))
-            self.context.append(line.german)
-            self.book.update(line.id, translation=text, translation_pending=False)
+            german, text = line.german, None
+            failed = "" if line.target != "de" else None
+            try:
+                translator = self.translators(line.target)
+                dialect = self._dialect_of(line) if translator.corrects else None
+                fixed, text = translator.process(line.german, dialect, list(self.context), line.target)
+                german = fixed or german
+                self._last_error = ""
+            except TranslationError as e:
+                text = failed
+                self._error(str(e))
+            except Exception as e:  # keep the subtitles running whatever happens
+                text = failed
+                self._error(repr(e))
+            self.context.append(german)
+            self.book.update(line.id, german=german, translation=text, translation_pending=False)
 
 
 def merge_segments(segments: list[Segment]) -> Segment:

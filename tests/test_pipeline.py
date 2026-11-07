@@ -195,3 +195,52 @@ def test_run_file_can_be_stopped():
     run_file(Slow(), Passthrough(), "x", LineBook(on_line=sink), lambda s: None,
              options=Options(target="de"), stop=stop)
     assert len(lines) < 100
+
+
+class FakeClaude(Translator):
+    corrects = True
+
+    def __init__(self):
+        self.seen = []
+
+    def process(self, german, dialect=None, context=(), target="ru"):
+        self.seen.append((german, dialect, list(context), target))
+        fixed = german.replace("Gipfel", "Gipfeli")
+        return fixed, ("RU:" + fixed if target == "ru" else None)
+
+
+def test_worker_uses_dialect_line_and_stores_corrected_german():
+    from swiss_ru_de.pipeline import TranslationWorker
+
+    lines = []
+    book = LineBook(on_line=lines.append)
+    claude = FakeClaude()
+    worker = TranslationWorker(lambda t: claude, book, lambda s: None, dialect_wait=2.0).start()
+    line = book.new(0, 1, "zwei Gipfel", "ru", dialect=True)
+    worker.put(line)
+
+    def dialect_ready():
+        time.sleep(0.2)
+        book.update(line.id, dialect="zwöi Gipfeli", dialect_pending=False)
+
+    threading.Thread(target=dialect_ready).start()
+    worker.close()
+    assert claude.seen[0][:2] == ("zwei Gipfel", "zwöi Gipfeli")  # waited for the 2nd hearing
+    assert (lines[0].german, lines[0].translation) == ("zwei Gipfeli", "RU:zwei Gipfeli")
+
+
+def test_worker_does_not_wait_forever_for_the_dialect_line():
+    from swiss_ru_de.pipeline import TranslationWorker
+
+    lines = []
+    book = LineBook(on_line=lines.append)
+    claude = FakeClaude()
+    worker = TranslationWorker(lambda t: claude, book, lambda s: None, dialect_wait=0.2).start()
+    line = book.new(0, 1, "zwei Gipfel", "de", dialect=True)
+    started = time.monotonic()
+    worker.put(line)
+    time.sleep(0.5)
+    book.update(line.id, dialect=None, dialect_pending=False)
+    worker.close()
+    assert claude.seen[0][1] is None and time.monotonic() - started < 2
+    assert lines[0].german == "zwei Gipfeli" and lines[0].translation is None  # German corrected

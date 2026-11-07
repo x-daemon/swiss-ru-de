@@ -205,8 +205,11 @@ class App:
 
         self.top.set_titles(*TOP_TITLES[self.s.top])
         title, subtitle = BOTTOM_TITLES[self.s.target]
+        kind = resolve_kind(self.s.translator)
         if self.s.target != "de":
-            subtitle += " · " + QUALITY_LABEL.get(resolve_kind(self.s.translator), "")
+            subtitle += " · " + QUALITY_LABEL.get(kind, "")
+        elif kind == "claude":
+            subtitle += " · corrected by Claude"
         self.bottom.set_titles(title, subtitle)
 
     def _zoom(self, delta: int) -> None:
@@ -594,7 +597,8 @@ class SettingsDialog:
                                        values=["auto", "claude", "deepl", "offline"])
         self.translator.set(s.translator)
         field("Translator", self.translator,
-              "auto = Claude if its key is set, else DeepL, else offline (lowest quality).")
+              "auto = Claude if its key is set, else DeepL, else offline (lowest quality). "
+              "Claude also corrects recognition errors.")
         self.claude_key = tk.StringVar()
         self.deepl_key = tk.StringVar()
         field("Claude API key", ttk.Entry(win, textvariable=self.claude_key, show="•", width=36),

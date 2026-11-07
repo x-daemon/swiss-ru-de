@@ -39,7 +39,8 @@ def test_deepl_without_key_is_a_clear_error(monkeypatch):
 
 
 class FakeMessages:
-    def __init__(self, stop_reason="end_turn", text="Привет всем"):
+    def __init__(self, stop_reason="end_turn",
+                 text='{"german": "Hoi zäme, zwei Gipfeli bitte.", "russian": "Привет всем, два круассана, пожалуйста."}'):
         self.kwargs = None
         self.stop_reason = stop_reason
         self.text = text
@@ -53,34 +54,62 @@ class FakeMessages:
         )
 
 
-def test_claude_request_shape(monkeypatch):
+def test_claude_corrects_and_translates_in_one_json_request(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     t = ClaudeTranslator()
     fake = FakeMessages()
     t.client = SimpleNamespace(beta=SimpleNamespace(messages=fake), messages=None)
-    assert t.translate("Hoi zäme", ["Guten Morgen"]) == "Привет всем"
+    fixed, russian = t.process("Hoi zäme, zwei Gipfel bitte.", "Hoi zäme, zwöi Gipfeli bitte.",
+                               ["Guten Morgen"], "ru")
+    assert fixed == "Hoi zäme, zwei Gipfeli bitte." and russian.startswith("Привет всем")
     kw = fake.kwargs
     assert kw["model"] == "claude-opus-5-5"
     assert kw["fallbacks"] == "default" and kw["betas"] == ["server-side-fallback-2026-07-01"]
-    assert kw["output_config"] == {"effort": "low"}
+    assert kw["output_config"]["effort"] == "low"
+    schema = kw["output_config"]["format"]["schema"]
+    assert schema["required"] == ["german", "russian"] and schema["additionalProperties"] is False
     content = kw["messages"][0]["content"]
-    assert content.endswith("Translate:\nHoi zäme") and "Guten Morgen" in content
+    assert "Guten Morgen" in content
+    assert "Recognised: Hoi zäme, zwei Gipfel bitte." in content
+    assert content.endswith("As heard: Hoi zäme, zwöi Gipfeli bitte.")
 
 
-def test_claude_other_model_uses_plain_endpoint(monkeypatch):
+def test_claude_german_only_target_corrects_without_translating(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     t = ClaudeTranslator(model="claude-haiku-5-5")
-    fake = FakeMessages()
+    fake = FakeMessages(text='{"german": "Ich habe zwei Gipfeli gegessen."}')
     t.client = SimpleNamespace(beta=None, messages=fake)
-    t.translate("Grüezi")
-    assert "fallbacks" not in fake.kwargs and fake.kwargs["output_config"] == {"effort": "low"}
+    assert t.process("Ich habe zwei Gipfel gegessen.", None, (), "de") == ("Ich habe zwei Gipfeli gegessen.", None)
+    assert "fallbacks" not in fake.kwargs  # Haiku: plain endpoint
+    assert fake.kwargs["output_config"]["format"]["schema"]["required"] == ["german"]
+    assert "As heard" not in fake.kwargs["messages"][0]["content"]
 
 
-def test_claude_refusal_returns_empty(monkeypatch):
+def test_claude_translate_still_works(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    t = ClaudeTranslator()
+    t.client = SimpleNamespace(beta=SimpleNamespace(messages=FakeMessages()))
+    assert t.translate("Hoi zäme") == "Привет всем, два круассана, пожалуйста."
+
+
+def test_claude_refusal_or_bad_json_returns_empty(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     t = ClaudeTranslator()
     t.client = SimpleNamespace(beta=SimpleNamespace(messages=FakeMessages("refusal", "")))
-    assert t.translate("x") == ""
+    assert t.process("x") == (None, "")
+    t.client = SimpleNamespace(beta=SimpleNamespace(messages=FakeMessages(text="not json")))
+    assert t.process("x", target="de") == (None, None)
+
+
+def test_hub_uses_claude_for_german_only_when_claude(monkeypatch):
+    from swiss_ru_de.translate import TranslatorHub
+
+    hub = TranslatorHub("offline")
+    assert isinstance(hub.get("de"), Passthrough)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    hub = TranslatorHub("auto")
+    assert isinstance(hub.get("de"), ClaudeTranslator)
+    assert hub.get("de") is hub.get("ru")  # one client for both
 
 
 def test_cli_defaults_and_flags():
