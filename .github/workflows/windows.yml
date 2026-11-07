@@ -1,0 +1,51 @@
+name: Windows install pack
+
+# Runs install-windows.bat on a real Windows machine (big downloads skipped) and the test
+# suite on Windows, so installer mistakes are caught before they reach a user.
+on:
+  push:
+    branches: [main, "win-*"]
+    paths: ["*.bat", "tools/**", "pyproject.toml", "swiss_ru_de/**", "tests/**",
+            ".github/workflows/windows.yml"]
+  workflow_dispatch:
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  install:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      SWISS_SETUP_CI: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run install-windows.bat
+        shell: cmd
+        run: install-windows.bat
+
+      - name: Check the installation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          foreach ($f in ".venv\Scripts\swiss-ru-de.exe", ".venv\Scripts\swiss-ru-de-gui.exe",
+                         ".venv\installed-pyproject.toml", "swiss_ru_de\icon.ico") {
+            if (-not (Test-Path $f)) { throw "missing: $f" }
+          }
+          foreach ($folder in [Environment]::GetFolderPath("Desktop"), [Environment]::GetFolderPath("Programs")) {
+            $lnk = Join-Path $folder "Swiss RU-DE.lnk"
+            if (-not (Test-Path $lnk)) { throw "missing shortcut: $lnk" }
+            $target = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk).TargetPath
+            if (-not (Test-Path $target)) { throw "shortcut points nowhere: $target" }
+          }
+          .venv\Scripts\swiss-ru-de.exe --version
+          if ($LASTEXITCODE -ne 0) { throw "swiss-ru-de --version failed" }
+          Write-Host "Installation OK"
+
+      - name: Test suite on Windows
+        shell: cmd
+        run: |
+          .venv\Scripts\python.exe -m pip install --quiet pytest
+          .venv\Scripts\python.exe -m pytest -q -p no:cacheprovider

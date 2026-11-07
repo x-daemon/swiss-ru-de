@@ -160,6 +160,13 @@ class App:
         self.root = root = tk.Tk()
         root.title("swiss-ru-de")
         root.configure(bg=C["bg"])
+        try:  # app icon (window and taskbar)
+            self._icon = tk.PhotoImage(file=str(Path(__file__).with_name("icon.png")))
+            root.iconphoto(True, self._icon)
+            if sys.platform == "win32":
+                root.iconbitmap(default=str(Path(__file__).with_name("icon.ico")))
+        except Exception:
+            pass
         root.geometry(s.geometry or "920x640")
         root.minsize(420, 320)
         root.attributes("-topmost", s.always_on_top)
@@ -621,6 +628,8 @@ class SettingsDialog:
         self.key_label, self.key_note_label = field("API key", self.key_entry, " ")
         self.llm_model = ttk.Combobox(win, width=34)  # editable: any model id works
         _, self.model_note_label = field("Model", self.llm_model, " ")
+        self.install_button = ttk.Button(win, text="Install Ollama + model…", command=self.install_local_ai)
+        field("", self.install_button)
         self.typed_keys: dict[str, str] = {}
         self.models = {"claude": s.claude_model or "claude-opus-5-5",
                        **{p: getattr(s, f"{p}_model") or info["models"][0] for p, info in PROVIDERS.items()}}
@@ -724,6 +733,10 @@ class SettingsDialog:
         kind = self.kinds[self.translator.get()]
         key_name = self.KEY_NAMES.get(kind)
         self.key_label.configure(text="Server" if kind == "local" else "API key")
+        if kind == "local":
+            self.install_button.grid()
+        else:
+            self.install_button.grid_remove()
         self.key_entry.configure(show="" if kind == "local" else "•")
         installed: list[str] = []
         if kind == "local":
@@ -757,6 +770,21 @@ class SettingsDialog:
             self.llm_model.configure(state="disabled", values=[])
             self.model_note_label.configure(text=" ")
         self._shown = kind
+
+    def install_local_ai(self) -> None:
+        """Run install-local-ai.bat (Windows) in its own console window."""
+        import subprocess
+        from tkinter import messagebox
+
+        script = Path(__file__).resolve().parent.parent / "install-local-ai.bat"
+        if sys.platform != "win32" or not script.exists():
+            messagebox.showinfo("Local AI", "Install Ollama from https://ollama.com/download, then run "
+                                "in a terminal:\n\n    ollama pull gemma3:12b", parent=self.win)
+            return
+        subprocess.Popen(["cmd", "/c", "start", "Install local AI", str(script)], cwd=str(script.parent))
+        messagebox.showinfo("Local AI", "The installer runs in its own window (a few minutes: Ollama, "
+                            "then the model download). Restart swiss-ru-de when it says Done.",
+                            parent=self.win)
 
     def _stash(self) -> None:
         """Remember what was typed for the translator shown so far."""

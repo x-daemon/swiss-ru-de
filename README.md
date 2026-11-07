@@ -39,18 +39,41 @@ GitHub Actions.
 
 ## Install
 
-**Windows:** install [Python 3.10+](https://www.python.org/downloads/) and tick *"Add python.exe
-to PATH"*. Then double-click **`start-windows.bat`**. The first start installs everything and
-downloads the models (a few GB, once). After that, the two-part window opens and shows
-whatever your PC is playing.
+### Windows: the install pack (recommended)
 
-**Manual install (Windows, Linux, macOS):**
+1. Download the project as ZIP (on GitHub: *Code → Download ZIP*, or the archive you were
+   sent) and unzip it, e.g. to `C:\swiss-ru-de`.
+2. Double-click **`install-windows.bat`**. It does everything, in 10 to 30 minutes (up to
+   about 12 GB of downloads):
+   1. Python 3.12, only if no Python 3.10+ is installed (via winget);
+   2. swiss-ru-de with all translators, plus the CUDA libraries if an NVIDIA graphics card
+      is found;
+   3. **Local AI**: Ollama and a translation model that fits the graphics card
+      (`gemma3:12b` with 12 GB or more, otherwise `gemma3:4b`). Settings are switched to it;
+   4. the speech models, so the first start is fast;
+   5. **"Swiss RU-DE"** shortcuts on the desktop and in the Start menu;
+   6. starts the app.
+3. From then on, start it with the **Swiss RU-DE** icon.
+
+Running `install-windows.bat` again updates everything (e.g. after downloading a newer
+version). `install-local-ai.bat` installs only Ollama and the model; *Settings → Install
+Ollama + model…* runs it too. `uninstall-windows.bat` removes shortcuts, the Python
+environment and, if you choose, the models and settings.
+
+`start-windows.bat` remains as a launcher that also shows a console window, which is useful
+when something goes wrong.
+
+### Manual install (Windows, Linux, macOS)
 
 ```bash
 git clone https://github.com/x-daemon/swiss-ru-de && cd swiss-ru-de
 python -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
-pip install -e ".[all]"      # or only what you need: ".[claude]", ".[deepl]", ".[offline]"
+pip install -e ".[all]"      # add ,gpu for an NVIDIA card: ".[all,gpu]"
+swiss-ru-de --gui
 ```
+
+For local AI on Linux/macOS, install Ollama from [ollama.com](https://ollama.com) and run
+`ollama pull gemma3:12b`.
 
 ## The window
 
@@ -300,8 +323,11 @@ dialect is welcome.
 Гриндельвальд/Бернский Оберланд, Вале и др.) на русский или литературный немецкий. Она слушает всё,
 что звучит на компьютере: Teams, YouTube, файлы.
 
-1. Установите Python 3.10+ (отметьте «Add python.exe to PATH»).
-2. Запустите `start-windows.bat`. Первый запуск устанавливает программу и скачивает модели (несколько ГБ).
+1. Распакуйте архив и дважды щёлкните **`install-windows.bat`**. Он сам установит:
+   Python (если его нет), программу, поддержку видеокарты NVIDIA, локальный ИИ (Ollama +
+   модель перевода по объёму видеопамяти), модели распознавания и ярлык **Swiss RU-DE** на
+   рабочем столе. Это займёт 10–30 минут, скачивается до 12 ГБ.
+2. Дальше запускайте программу ярлыком **Swiss RU-DE**.
 3. Откроется окно из двух частей. Сверху: швейцарский немецкий, как его произнесли (на диалекте).
    Снизу: перевод на русский или литературный немецкий; выбор в **Settings**.
 
