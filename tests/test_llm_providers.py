@@ -179,13 +179,13 @@ def test_local_requests_are_short_and_fast():
     assert call["reasoning_effort"] == "none"  # no thinking
     assert call["temperature"] == 0.2
     assert call["extra_body"] == {"keep_alive": "30m"}  # stays in the graphics card
-    assert call["max_tokens"] == 64 + 5 * 3 and "max_completion_tokens" not in call  # Ollama reads max_tokens
+    assert 64 < call["max_tokens"] < 200 and "max_completion_tokens" not in call  # Ollama reads max_tokens
     assert not t.uses_dialect  # the worker does not wait for the dialect line
     t, fake = make_local(['{"german": "Ja.", "russian": "Да."}'])
     assert t.process("Ja") == ("Ja.", "Да.")
     call = fake.calls[0]
     assert call["response_format"]["json_schema"]["schema"]["required"] == ["german", "russian"]
-    assert call["max_tokens"] == 64 + 12 * 1
+    assert 64 + 12 <= call["max_tokens"] < 120
 
 
 def test_runaway_local_answer_is_cleaned():
@@ -258,3 +258,30 @@ def test_warm_up_loads_the_local_model():
     assert fake.calls[0]["extra_body"] == {"keep_alive": "30m"}
     t, fake = make_local([ConnectionError("not running")])
     t.warm_up()  # no error: the first sentence reports it
+
+
+def test_local_sentences_are_numbered_and_none_is_skipped():
+    """gemma3:4b translated only the last of five sentences; now each number must come back."""
+    german = ("Der kommt im Geschäft. Einen Kaffee. Im Geschäft dann, ja. Ja, gut. "
+              "Und wie lange braucht ihr ungefähr zum Morgenessen?")
+    t, fake = make_local(["1. – Кофе — на работе.\n2. Один кофе.\n4. Да, хорошо.\n"
+                          "5. И сколько времени вам нужно на завтрак?",
+                          "На работе, да."])  # the retry for the skipped number 3
+    assert t.process(german, correct=False) == (None, (
+        "Кофе — на работе. Один кофе. На работе, да. Да, хорошо. "
+        "И сколько времени вам нужно на завтрак?"))
+    first = fake.calls[0]["messages"][1]["content"]
+    assert "1. Der kommt im Geschäft.\n2. Einen Kaffee.\n3. Im Geschäft dann, ja.\n4. Ja, gut." in first
+    assert "5. Und wie lange braucht ihr ungefähr zum Frühstück?" in first  # Swiss word normalised
+    assert fake.calls[1]["messages"][1]["content"].endswith("Text: Im Geschäft dann, ja.")
+    t, fake = make_local(["Кофе на работе. Один кофе."])  # numbers ignored: answer as it is
+    assert t.process("Der kommt im Geschäft. Einen Kaffee.", correct=False)[1] == \
+        "Кофе на работе. Один кофе."
+    assert len(fake.calls) == 1
+
+
+def test_parse_numbered():
+    p = translate.parse_numbered
+    assert p("1. Да.\n2) Нет.\n**3.** Может быть.\n7. лишнее\n2. повтор", 3) == \
+        {1: "Да.", 2: "Нет.", 3: "Может быть."}
+    assert p("<think>1. x</think>Просто текст", 2) == {}

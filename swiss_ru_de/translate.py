@@ -28,6 +28,8 @@ SWISS_TERMS = [
     # "am Morgen", so this only changes the Swiss usage)
     (r"zum morge[n]?", "zum Frühstück"),
     (r"z['’]?morge[n]?", "Frühstück"),
+    (r"morgenessen", "Frühstück"),
+    (r"um morgen zu essen", "um zu frühstücken"),
     (r"z['’]?mittag", "Mittagessen"),
     (r"z['’]?nacht", "Abendessen"),
     (r"z['’]?vieri", "Zwischenmahlzeit"),
@@ -73,6 +75,10 @@ SWISS_TERMS = [
     (r"merci vilmal|merci viel ?mal", "vielen Dank"),
     (r"merci", "danke"),
     (r"zäme", "zusammen"),
+    # small translation models get these wrong ("Viertelstunde" -> "14 minutes")
+    (r"(?:eine |ne )?dreiviertelstunde", "45 Minuten"),
+    (r"(?:eine |ne )?viertelstunde", "15 Minuten"),
+    (r"mega", "sehr"),
     (r"uf widerluege|adieu", "auf Wiedersehen"),
 ]
 _SWISS_RE = [(re.compile(rf"\b(?:{k})\b", re.IGNORECASE), v) for k, v in SWISS_TERMS]
@@ -355,7 +361,7 @@ PROVIDERS = {
     # Runs on this PC (GPU): Ollama or LM Studio serve an OpenAI-compatible API, no key.
     "local": dict(label="Local AI (Ollama / LM Studio)", short="Local AI",
                   base_url="http://localhost:11434/v1",
-                  models=["gemma3:4b", "gemma3:12b", "qwen3:14b", "translategemma:4b",
+                  models=["gemma3:4b", "gemma3:12b", "qwen3:8b", "qwen3:14b", "translategemma:4b",
                           "translategemma:12b"],
                   reasoning_effort=None, where="ollama.com, then: ollama pull gemma3:4b"),
 }
@@ -399,6 +405,8 @@ translate what the speaker most likely meant.
 
 Rules:
 - Answer with the Russian translation of the text after "Text:" and nothing else.
+- If the sentences are numbered, answer with the same numbers, one line per number. \
+Translate every number, even very short ones ("Ja, gut."): never skip, merge or add one.
 - Translate every sentence, in the same order. Add nothing, leave nothing out.
 - Cyrillic only: no transliteration in Latin letters, no notes, no quotes, no German.
 - The previous lines are context only - do not translate them again.
@@ -414,12 +422,31 @@ TRANSLATEGEMMA_PROMPT = (
     "text into Russian:\n\n\n")
 
 
-def local_prompt(german: str, context: Sequence[str]) -> str:
+def local_prompt(german: str | list[str], context: Sequence[str]) -> str:
+    """One sentence as it is; several numbered - small models otherwise drop some."""
     prompt = ""
     if context:
         prompt = "Previous lines (context only, do not translate):\n" + \
             "\n".join(context[-2:]) + "\n\n"
+    if isinstance(german, list):
+        if len(german) == 1:
+            german = german[0]
+        else:
+            return prompt + "Text:\n" + "\n".join(f"{i}. {t}" for i, t in enumerate(german, 1))
     return prompt + "Text: " + german
+
+
+_NUMBERED = re.compile(r"^\s*\**\s*(\d{1,2})\s*[.):]\s*\**\s*(.*\S)?\s*$")
+
+
+def parse_numbered(text: str, count: int) -> dict[int, str]:
+    """ "1. ...\n2. ..." -> {1: "...", 2: "..."}; only numbers 1..count, first answer each."""
+    found: dict[int, str] = {}
+    for line in _THINK.sub("", text or "").splitlines():
+        m = _NUMBERED.match(line)
+        if m and 1 <= int(m.group(1)) <= count and m.group(2):
+            found.setdefault(int(m.group(1)), m.group(2))
+    return found
 
 
 def _content(resp) -> str:
@@ -522,15 +549,34 @@ class OpenAICompatibleTranslator(Translator):
     def _request(self, german: str, dialect: str | None, context: Sequence[str], mode: str) -> dict:
         if self.provider == "local":
             german, dialect = normalize_swiss_terms(german, context), None  # help small models
-            if mode == "ru-only":
-                # Plain text, no JSON: small models break JSON (curly quotes, endless "0}")
-                # and need fewer tokens without it.
-                return self._chat(LOCAL_SYSTEM, local_prompt(german, context), german, mode)
         schema = {"type": "json_schema",
                   "json_schema": {"name": "subtitle", "schema": _SCHEMAS[mode], "strict": True}}
         req = self._chat(self.system, build_prompt(german, dialect, context), german, mode)
         req["response_format"] = self.options.get("response_format", schema)
         return req
+
+    def _local_translation(self, german: str, context: Sequence[str]) -> str:
+        """Local AI, Russian only. Plain text, no JSON: small models break JSON (curly
+        quotes, endless "0}"). Several sentences go numbered and each number must come
+        back: given a block, a 4B model often translated only the last sentence."""
+        text = normalize_swiss_terms(german, context)
+        sentences = split_sentences(text) or [text]
+        req = self._chat(LOCAL_SYSTEM, local_prompt(sentences, context), text, "ru-only")
+        answer = _content(self._create(req))
+        if len(sentences) == 1:
+            return clean_translation(answer, text)
+        got = parse_numbered(answer, len(sentences))
+        if not got:  # the model ignored the numbers: take its answer as it is
+            return clean_translation(answer, text)
+        missing = [i for i in range(1, len(sentences) + 1) if i not in got]
+        if missing:  # ask once more, for the skipped sentences only
+            again = [sentences[i - 1] for i in missing]
+            req = self._chat(LOCAL_SYSTEM, local_prompt(again, context), " ".join(again), "ru-only")
+            answer = _content(self._create(req))
+            more = parse_numbered(answer, len(again)) if len(again) > 1 else {1: answer}
+            got.update({missing[j - 1]: t for j, t in more.items()})
+        parts = [clean_translation(got[i], sentences[i - 1]).lstrip("–—- ") for i in sorted(got)]
+        return " ".join(p for p in parts if p)
 
     def _chat(self, system: str | None, user: str, german: str, mode: str) -> dict:
         messages = ([{"role": "system", "content": system}] if system else []) + \
@@ -542,7 +588,9 @@ class OpenAICompatibleTranslator(Translator):
             # A small model can get stuck repeating itself; this caps it near what the
             # sentence needs (a graphics card writes 30-100 tokens per second).
             words = len(german.split())
-            req["max_tokens"] = min(2048, 64 + (5 if mode == "ru-only" else 6 * len(_FIELDS[mode])) * words)
+            lines = user.count("\n") + 1  # numbered sentences: a few tokens per number
+            req["max_tokens"] = min(2048, 64 + 3 * lines +
+                                    (5 if mode == "ru-only" else 6 * len(_FIELDS[mode])) * words)
         else:
             req["max_completion_tokens"] = 4096  # cloud reasoning models count thinking here
         return req
@@ -621,12 +669,12 @@ class OpenAICompatibleTranslator(Translator):
             text = normalize_swiss_terms(german, context)
             resp = self._create(self._chat(None, TRANSLATEGEMMA_PROMPT + text, text, "ru-only"))
             return None, clean_translation(_content(resp), text)
+        if self.provider == "local" and mode == "ru-only":
+            return None, self._local_translation(german, context)
         resp = self._create(self._request(german, dialect, context, mode))
         choice = resp.choices[0] if resp.choices else None
         if choice is None or getattr(choice.message, "refusal", None):
             return None, ("" if target == "ru" else None)
-        if self.provider == "local" and mode == "ru-only":  # asked for plain text
-            return None, clean_translation(_content(resp), german)
         fixed, russian = parse_answer(choice.message.content or "", target)
         return fixed, (clean_translation(russian, german) if russian else russian)
 

@@ -751,8 +751,8 @@ class SettingsDialog:
         "grok": "grok-4.7",
         "local": "gemma3:4b = fast, fits next to the speech models on any 8-12 GB graphics "
                  "card. gemma3:12b = more precise, needs 16 GB (on 12 GB it spills to the "
-                 "processor and gets minutes behind). translategemma:4b = translation only "
-                 "(no German correction), same size. Install: ollama pull gemma3:4b",
+                 "processor and gets minutes behind). qwen3:8b = bigger, still fits 12 GB. "
+                 "translategemma:4b = translation only. Install: ollama pull gemma3:4b",
     }
 
     def _show_translator(self) -> None:

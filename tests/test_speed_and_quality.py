@@ -264,3 +264,12 @@ def test_gipfel_compounds_and_neuter_are_croissants():
         "Hast du etwas dazu getrunken? Nur ein Croissant."
     assert n("Der Gipfel ist hoch, wir trinken oben Tee.") == "Der Gipfel ist hoch, wir trinken oben Tee."
     assert n("Das Gipfeltreffen war lang.") == "Das Gipfeltreffen war lang."
+
+
+def test_time_words_for_small_models():
+    n = normalize_swiss_terms
+    assert n("Eine Viertelstunde oder so 20 Minuten.") == "15 Minuten oder so 20 Minuten."
+    assert n("Etwa eine Dreiviertelstunde, mega langsam.") == "Etwa 45 Minuten, sehr langsam."
+    assert n("Wie lange braucht ihr zum Morgenessen?") == "Wie lange braucht ihr zum Frühstück?"
+    assert n("Wie lange nehmen Sie sich Zeit, um morgen zu essen?") == \
+        "Wie lange nehmen Sie sich Zeit, um zu frühstücken?"

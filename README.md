@@ -205,8 +205,12 @@ Notes:
   not the dialect line as well: given two versions, a 4B model translated both and doubled
   sentences. Labels, Latin transliterations in brackets and repetition loops are removed
   from its answers.
-* `translategemma:4b` is a translation-only model of the same size (it doesn't correct the
-  German). It is an alternative to `gemma3:4b` when only Russian is shown.
+* **Several sentences are sent numbered** (1., 2., 3., …) and every number must come back;
+  a skipped one is asked for again. Given a block of sentences, a 4B model often translated
+  only the last one.
+* **Other models that fit a 12 GB card next to the speech models:** `qwen3:8b` (about 6 GB,
+  bigger than `gemma3:4b`) and `translategemma:4b` (translation only, doesn't correct the
+  German). Install with `ollama pull <name>`, then pick it in *Settings → Model*.
 * **Only the Russian is asked for** when the corrected German isn't on screen (top part =
   dialect, bottom part = Russian): half the answer, so about twice as fast. Set the top part
   to *Standard German* to see the AI-corrected German.
