@@ -196,8 +196,17 @@ Notes:
   behind. Use it only with 16 GB or more. The app checks this when it starts and says so in
   the status line ("runs 40 % on the processor …").
 * **Speed settings for local AI:** no "thinking" (Qwen3), temperature 0.2 (literal
-  translations), a cap on the answer length (a small model that starts repeating itself
-  cannot run for minutes), and the model is kept loaded for 30 minutes.
+  translations), a cap on the answer length (`max_tokens`, which Ollama reads; a small model
+  that starts repeating itself cannot run for minutes), and the model is kept loaded for
+  30 minutes.
+* **Small models get a simpler job.** For Russian only, the local model is asked for plain
+  text, not JSON: small models break JSON (curly quotes) and then loop. It gets only the
+  recognised German, with Swiss words already replaced (*Buttergipfel* → *Buttercroissant*),
+  not the dialect line as well: given two versions, a 4B model translated both and doubled
+  sentences. Labels, Latin transliterations in brackets and repetition loops are removed
+  from its answers.
+* `translategemma:4b` is a translation-only model of the same size (it doesn't correct the
+  German). It is an alternative to `gemma3:4b` when only Russian is shown.
 * **Only the Russian is asked for** when the corrected German isn't on screen (top part =
   dialect, bottom part = Russian): half the answer, so about twice as fast. Set the top part
   to *Standard German* to see the AI-corrected German.

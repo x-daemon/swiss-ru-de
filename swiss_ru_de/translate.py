@@ -80,23 +80,37 @@ _SWISS_RE = [(re.compile(rf"\b(?:{k})\b", re.IGNORECASE), v) for k, v in SWISS_T
 # "Gipfel" means a mountain peak - unless people talk about breakfast or a bakery, where the
 # speech model often writes "Gipfel" for the Swiss "Gipfeli" (croissant).
 _FOOD = re.compile(
-    r"\b(frühstück|zmorge|kaffee|kafi|bäcke(rei|r)|beck|essen|isst|esse|gegessen|ässe|butter|"
-    r"marmelade|konfi|brot|brötchen|zopf|croissants?|gipfeli|hunger|tee|milch|café|kaufen|"
-    r"gekauft|bestellt|frisch|warm|knusprig|schokolade|schoggi|teller|tisch|pause)\b",
+    r"\b(frühstück|frühstücken|zmorge|morgenessen|kaffee|kafi|bäcke(rei|r)|beck|essen|isst|esse|"
+    r"gegessen|ässe|butter|marmelade|konfi|brot|brötchen|zopf|croissants?|gipfeli|hunger|tee|"
+    r"milch|café|kaufen|gekauft|bestellt|frisch|warm|knusprig|schokolade|schoggi|teller|tisch|"
+    r"pause|trinken|getrunken|trinkst|müsli|müesli|joghurt|jogurt|porridge|saft|orangensaft)\b",
     re.IGNORECASE)
-_GIPFEL = re.compile(r"\b(Gipfel)(i)?(n|s)?\b", re.IGNORECASE)
+# optional kind (Buttergipfeli, Schoggigipfeli, ...), "Gipfel", Swiss diminutive "i", plural
+_GIPFEL = re.compile(r"\b(butter|schoggi|schokoladen|nuss|mandel|laugen|vollkorn|dinkel)?"
+                     r"(gipfel)(i)?(n|s)?\b", re.IGNORECASE)
+_NEUTER = {"das", "es", "s", "'s", "ds", "äs", "eis"}  # "das Gipfel": not the mountain (der Gipfel)
+_MOUNTAIN = re.compile(r"\b(berg\w*|eiger|mönch|jungfrau|matterhorn|hoch|oben|aussicht|wander\w*|"
+                       r"steig\w*|gestiegen|kletter\w*|meter|gletscher|alp\w*|ski\w*|seilbahn|"
+                       r"gondel|gipfelkreuz|hütte)\b", re.IGNORECASE)
 
 
 def normalize_swiss_terms(text: str, context: Sequence[str] = ()) -> str:
     for pattern, replacement in _SWISS_RE:
         text = pattern.sub(replacement, text)
-    food = any(_FOOD.search(t) for t in (text, *context[-2:]))
+
+    def surely_croissant(m: re.Match) -> bool:
+        before = (text[: m.start()].split()[-1:] or [""])[0].lower()
+        return bool(m.group(1) or m.group(3)) or before in _NEUTER
+
+    food = (any(_FOOD.search(t) for t in (text, *context[-2:])) and not _MOUNTAIN.search(text)) or \
+        any(surely_croissant(m) for m in _GIPFEL.finditer(text))
 
     def croissant(m: re.Match) -> str:
-        if not (m.group(2) or food):  # plain "Gipfel" outside food talk: a mountain peak
+        if not (food or surely_croissant(m)):  # "Gipfel" outside food talk: a mountain peak
             return m.group(0)
-        plural = bool(m.group(3)) or _plural_before(text, m)
-        return "Croissants" if plural else "Croissant"
+        plural = bool(m.group(4)) or _plural_before(text, m)
+        word = "croissant" if m.group(1) else "Croissant"
+        return (m.group(1) or "") + word + ("s" if plural else "")
 
     return _GIPFEL.sub(croissant, text)
 
@@ -124,6 +138,11 @@ class TranslationError(RuntimeError):
 class Translator:
     name = "none"
     corrects = False  # True if it can also fix recognition errors (Claude)
+
+    @property
+    def uses_dialect(self) -> bool:
+        """Does it use the dialect line as a second hearing (worth waiting a moment for)?"""
+        return self.corrects
 
     def translate(self, text: str, context: Sequence[str] = ()) -> str:
         raise NotImplementedError
@@ -215,7 +234,7 @@ def build_prompt(german: str, dialect: str | None, context: Sequence[str]) -> st
 def _partial_answer(text: str) -> dict | None:
     found = {}
     for field in ("german", "russian"):
-        m = re.search(rf'"{field}"\s*:\s*"((?:[^"\\]|\\.)*)', text or "")
+        m = re.search(rf'"{field}"\s*:\s*"((?:[^"\u201d\\]|\\.)*)', text or "")
         if m:
             try:
                 found[field] = json.loads(f'"{m.group(1).rstrip(chr(92))}"')
@@ -336,7 +355,8 @@ PROVIDERS = {
     # Runs on this PC (GPU): Ollama or LM Studio serve an OpenAI-compatible API, no key.
     "local": dict(label="Local AI (Ollama / LM Studio)", short="Local AI",
                   base_url="http://localhost:11434/v1",
-                  models=["gemma3:4b", "gemma3:12b", "qwen3:14b", "translategemma:12b"],
+                  models=["gemma3:4b", "gemma3:12b", "qwen3:14b", "translategemma:4b",
+                          "translategemma:12b"],
                   reasoning_effort=None, where="ollama.com, then: ollama pull gemma3:4b"),
 }
 LOCAL_SERVERS = {"Ollama": "http://localhost:11434/v1", "LM Studio": "http://localhost:1234/v1"}
@@ -370,6 +390,68 @@ def local_models(base_url: str, timeout: float = 1.5) -> list[str]:
         return sorted(m.id for m in client.models.list())
     except Exception:
         return []
+
+
+# Small local models: short instructions, plain-text answer (no JSON), one sentence block.
+LOCAL_SYSTEM = """You translate live subtitles into Russian. The text is German from speech \
+recognition of Swiss German speakers: it can contain recognition errors and Swiss words - \
+translate what the speaker most likely meant.
+
+Rules:
+- Answer with the Russian translation of the text after "Text:" and nothing else.
+- Translate every sentence, in the same order. Add nothing, leave nothing out.
+- Cyrillic only: no transliteration in Latin letters, no notes, no quotes, no German.
+- The previous lines are context only - do not translate them again.
+- Croissant/Gipfeli = круассан, Zopf = плетёная булка, Weggli = булочка, Müsli = мюсли, \
+Frühstück/Zmorge = завтрак, Velo = велосипед, Natel = мобильный."""
+
+# TranslateGemma's prompt format (model card), German -> Russian.
+TRANSLATEGEMMA_PROMPT = (
+    "You are a professional German (de) to Russian (ru) translator. Your goal is to accurately "
+    "convey the meaning and nuances of the original German text while adhering to Russian "
+    "grammar, vocabulary, and cultural sensitivities.\nProduce only the Russian translation, "
+    "without any additional explanations or commentary. Please translate the following German "
+    "text into Russian:\n\n\n")
+
+
+def local_prompt(german: str, context: Sequence[str]) -> str:
+    prompt = ""
+    if context:
+        prompt = "Previous lines (context only, do not translate):\n" + \
+            "\n".join(context[-2:]) + "\n\n"
+    return prompt + "Text: " + german
+
+
+def _content(resp) -> str:
+    choice = resp.choices[0] if resp.choices else None
+    return (choice.message.content or "") if choice else ""
+
+
+_LEAK = re.compile(r'["\u201c\u201d]?\s*[,}]\s*["\u201c\u201d]?\s*"?(?:german|russian)\b.*$',
+                   re.DOTALL | re.IGNORECASE)
+_LATIN_NOTE = re.compile(r"\s*\((?=[^()]*[A-Za-z])[^()\u0400-\u04ff]*\)")
+_LABEL = re.compile(r"^\s*\**\s*(?:перевод|translation|russian|русский|text|текст)\s*\**\s*:\s*\**\s*",
+                    re.IGNORECASE)
+_LOOP = re.compile(r"(\S.{0,11}?)(?:\s*\1){5,}", re.DOTALL)
+_CYRILLIC = re.compile(r"[\u0400-\u04ff]")
+
+
+def clean_translation(text: str | None, source: str = "") -> str:
+    """Remove what small models add to a translation: thinking, labels, Latin
+    transliteration in brackets, leaked JSON ("german": ...), endless repetition."""
+    text = _THINK.sub("", text or "")
+    text = _LEAK.sub("", text)
+    if _CYRILLIC.search(text):
+        text = _LATIN_NOTE.sub("", text)
+    text = _LABEL.sub("", text.strip())
+    # a repeated word once; repeated junk without letters ("0} 0} 0}") not at all
+    text = _LOOP.sub(lambda m: m.group(1) if re.search(r"[^\W\d_]", m.group(1)) else "", text)
+    text = " ".join(text.split()).strip("\"'\u201c\u201d\u00ab\u00bb{} ")
+    limit = 3 * len(source) + 80 if source else 0
+    if limit and len(text) > limit:  # still far too long: keep whole sentences
+        cut = max(text.rfind(c, 0, limit) for c in ".!?")
+        text = text[: cut + 1] if cut > limit // 2 else text[:limit].rstrip() + " …"
+    return text
 
 
 def pick_local_model(base_url: str) -> str:
@@ -431,17 +513,39 @@ class OpenAICompatibleTranslator(Translator):
             if ":11434" in self.base_url:
                 self.options["extra_body"] = {"keep_alive": "30m"}
 
-    def _request(self, german: str, dialect: str | None, context: Sequence[str], target: str) -> dict:
+    @property
+    def uses_dialect(self) -> bool:
+        # A small local model given two versions of a sentence translates both (doubled
+        # sentences) - it gets only the recognised German.
+        return self.corrects and self.provider != "local"
+
+    def _request(self, german: str, dialect: str | None, context: Sequence[str], mode: str) -> dict:
+        if self.provider == "local":
+            german, dialect = normalize_swiss_terms(german, context), None  # help small models
+            if mode == "ru-only":
+                # Plain text, no JSON: small models break JSON (curly quotes, endless "0}")
+                # and need fewer tokens without it.
+                return self._chat(LOCAL_SYSTEM, local_prompt(german, context), german, mode)
         schema = {"type": "json_schema",
-                  "json_schema": {"name": "subtitle", "schema": _SCHEMAS[target], "strict": True}}
-        return dict(
-            model=self.model,
-            messages=[{"role": "system", "content": self.system},
-                      {"role": "user", "content": build_prompt(german, dialect, context)}],
-            response_format=self.options.get("response_format", schema),
-            max_completion_tokens=self._max_tokens(german, target),
-            **{k: v for k, v in self.options.items() if k != "response_format"},
-        )
+                  "json_schema": {"name": "subtitle", "schema": _SCHEMAS[mode], "strict": True}}
+        req = self._chat(self.system, build_prompt(german, dialect, context), german, mode)
+        req["response_format"] = self.options.get("response_format", schema)
+        return req
+
+    def _chat(self, system: str | None, user: str, german: str, mode: str) -> dict:
+        messages = ([{"role": "system", "content": system}] if system else []) + \
+            [{"role": "user", "content": user}]
+        req = dict(model=self.model, messages=messages,
+                   **{k: v for k, v in self.options.items() if k != "response_format"})
+        if self.provider == "local":
+            # Ollama and LM Studio read "max_tokens" (Ollama ignores max_completion_tokens).
+            # A small model can get stuck repeating itself; this caps it near what the
+            # sentence needs (a graphics card writes 30-100 tokens per second).
+            words = len(german.split())
+            req["max_tokens"] = min(2048, 64 + (5 if mode == "ru-only" else 6 * len(_FIELDS[mode])) * words)
+        else:
+            req["max_completion_tokens"] = 4096  # cloud reasoning models count thinking here
+        return req
 
     def warm_up(self) -> None:
         """Local AI: load the model into the graphics card now, not at the first sentence."""
@@ -449,8 +553,7 @@ class OpenAICompatibleTranslator(Translator):
             return
         try:
             self.client.chat.completions.create(
-                model=self.model, messages=[{"role": "user", "content": "Hallo"}],
-                max_completion_tokens=1,
+                model=self.model, messages=[{"role": "user", "content": "Hallo"}], max_tokens=1,
                 **{k: v for k, v in self.options.items() if k in ("extra_body",)})
         except Exception:
             pass  # the first real sentence reports any problem
@@ -469,38 +572,11 @@ class OpenAICompatibleTranslator(Translator):
                 "slow. Choose gemma3:4b (Settings → Model), set the top part to Standard German, "
                 "or close other programs that use the graphics card.")
 
-    def _max_tokens(self, german: str, mode: str) -> int:
-        if self.provider != "local":
-            return 4096  # cloud reasoning models count their thinking in this limit
-        # A small local model can get stuck repeating itself; on a graphics card that is
-        # 30-80 tokens per second, so cap the answer near what the sentence needs.
-        return min(4096, 128 + 6 * len(_FIELDS[mode]) * len(german.split()))
-
-    def _plain_translation(self, german: str, context: Sequence[str]) -> str:
-        text = normalize_swiss_terms(german, context)
-        resp = self.client.chat.completions.create(model=self.model, messages=[{
-            "role": "user",
-            "content": f"Translate the following text from German to Russian:\n\n{text}"}])
-        return _THINK.sub("", resp.choices[0].message.content or "").strip()
-
-    def process(self, german: str, dialect: str | None = None, context: Sequence[str] = (),
-                target: str = "ru", correct: bool = True) -> tuple[str | None, str | None]:
+    def _create(self, req: dict):
         o = self._openai
-        target = "de" if target == "de" else "ru"
-        mode = answer_mode(target, correct)
-        if self.plain:
-            if target == "de":
-                return None, None
+        for _ in range(4):  # retries only to drop options a model does not support
             try:
-                return None, self._plain_translation(german, context)
-            except o.APIConnectionError as e:
-                raise TranslationError(self._unreachable()) from e
-            except o.NotFoundError as e:
-                raise TranslationError(self._not_installed()) from e
-        for _ in range(3):  # retries only to drop options a model does not support
-            try:
-                resp = self.client.chat.completions.create(**self._request(german, dialect, context, mode))
-                break
+                return self.client.chat.completions.create(**req)
             except o.BadRequestError as e:
                 message = str(e).lower()
                 if ("reasoning" in message or "think" in message) and "reasoning_effort" in self.options:
@@ -510,10 +586,15 @@ class OpenAICompatibleTranslator(Translator):
                 elif "temperature" in message and "temperature" in self.options:
                     del self.options["temperature"]
                 elif ("response_format" in message or "json_schema" in message) and \
-                        "response_format" not in self.options:
+                        "response_format" in req and "response_format" not in self.options:
                     self.options["response_format"] = {"type": "json_object"}
                 else:
                     raise TranslationError(f"{self.name}: {e}") from e
+                for k in ("reasoning_effort", "extra_body", "temperature"):
+                    if k not in self.options:
+                        req.pop(k, None)
+                if "response_format" in self.options and "response_format" in req:
+                    req["response_format"] = self.options["response_format"]
             except o.AuthenticationError as e:
                 raise TranslationError(f"{PROVIDERS[self.provider]['short']} API key is invalid (check Settings)") from e
             except o.NotFoundError as e:
@@ -528,12 +609,26 @@ class OpenAICompatibleTranslator(Translator):
                 if self.provider == "local":
                     raise TranslationError(self._unreachable()) from e
                 raise TranslationError(f"Cannot reach {PROVIDERS[self.provider]['short']} (network)") from e
-        else:
-            raise TranslationError(f"{self.name}: request rejected")
+        raise TranslationError(f"{self.name}: request rejected")
+
+    def process(self, german: str, dialect: str | None = None, context: Sequence[str] = (),
+                target: str = "ru", correct: bool = True) -> tuple[str | None, str | None]:
+        target = "de" if target == "de" else "ru"
+        mode = answer_mode(target, correct)
+        if self.plain:  # translation-only model (TranslateGemma)
+            if target == "de":
+                return None, None
+            text = normalize_swiss_terms(german, context)
+            resp = self._create(self._chat(None, TRANSLATEGEMMA_PROMPT + text, text, "ru-only"))
+            return None, clean_translation(_content(resp), text)
+        resp = self._create(self._request(german, dialect, context, mode))
         choice = resp.choices[0] if resp.choices else None
         if choice is None or getattr(choice.message, "refusal", None):
             return None, ("" if target == "ru" else None)
-        return parse_answer(choice.message.content or "", target)
+        if self.provider == "local" and mode == "ru-only":  # asked for plain text
+            return None, clean_translation(_content(resp), german)
+        fixed, russian = parse_answer(choice.message.content or "", target)
+        return fixed, (clean_translation(russian, german) if russian else russian)
 
     def translate(self, text: str, context: Sequence[str] = ()) -> str:
         return self.process(text, None, context, "ru", correct=False)[1] or ""

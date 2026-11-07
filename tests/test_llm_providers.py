@@ -167,17 +167,48 @@ def test_local_model_defaults_to_an_installed_one(monkeypatch):
 
 
 def test_local_requests_are_short_and_fast():
-    t, fake = make_local(['{"russian": "Два круассана."}'])
-    assert t.process("Zwei Gipfeli bitte", correct=False) == (None, "Два круассана.")
+    t, fake = make_local(["Два круассана, пожалуйста. (Dva kruassana, pozhaluysta.)"])
+    assert t.process("Zwei Gipfeli bitte", "Zwöi Gipfeli bitte", ["Grüezi"], correct=False) == \
+        (None, "Два круассана, пожалуйста.")  # transliteration removed
     call = fake.calls[0]
-    assert call["response_format"]["json_schema"]["schema"]["required"] == ["russian"]  # half the answer
+    assert "response_format" not in call  # plain text: small models break JSON
+    assert call["messages"][0]["content"] == translate.LOCAL_SYSTEM
+    user = call["messages"][1]["content"]
+    assert user.endswith("Text: Zwei Croissants bitte")  # Swiss words normalised first
+    assert "Zwöi" not in user and "context only" in user  # no second version to translate twice
     assert call["reasoning_effort"] == "none"  # no thinking
     assert call["temperature"] == 0.2
     assert call["extra_body"] == {"keep_alive": "30m"}  # stays in the graphics card
-    assert call["max_completion_tokens"] == 128 + 6 * 3  # a stuck model cannot run for minutes
+    assert call["max_tokens"] == 64 + 5 * 3 and "max_completion_tokens" not in call  # Ollama reads max_tokens
+    assert not t.uses_dialect  # the worker does not wait for the dialect line
     t, fake = make_local(['{"german": "Ja.", "russian": "Да."}'])
-    t.process("Ja")
-    assert fake.calls[0]["response_format"]["json_schema"]["schema"]["required"] == ["german", "russian"]
+    assert t.process("Ja") == ("Ja.", "Да.")
+    call = fake.calls[0]
+    assert call["response_format"]["json_schema"]["schema"]["required"] == ["german", "russian"]
+    assert call["max_tokens"] == 64 + 12 * 1
+
+
+def test_runaway_local_answer_is_cleaned():
+    """The 4b model wrote curly quotes inside its JSON and then "0} 0} 0} ..." for minutes."""
+    loop = ('{"german": "Ein Müsli.", "russian": "Один мюсли. Что бы она могла съесть мюсли? '
+            '(Odin myusli.)\u201d, \u201cgerman\u201d: \u201cEin Müsli.\u201d}' + " 0}" * 500)
+    t, _ = make_local([loop])
+    assert t.process("Es Müsli. Was hat sie denn Müsli gha?") == \
+        ("Ein Müsli.", "Один мюсли. Что бы она могла съесть мюсли?")
+    t, _ = make_local(["Перевод: Да, чай. " + "0} " * 400])
+    assert t.process("Ja, Tee.", correct=False) == (None, "Да, чай.")
+
+
+def test_clean_translation():
+    c = translate.clean_translation
+    assert c("**Перевод:** Привет, как дела?", "Hallo") == "Привет, как дела?"
+    assert c("И что ты взял? Овсянка. (I chto ty vzyal? Ovsyanka.)", "Was nimmst du? Porridge.") == \
+        "И что ты взял? Овсянка."
+    assert c("Да, да, да, да. Хорошо.", "Ja, ja, ja, ja. Gut.") == "Да, да, да, да. Хорошо."  # kept
+    assert c("<think>hm</think>\u00abДва круассана.\u00bb", "Zwei Gipfeli.") == "Два круассана."
+    long = "Очень длинный текст. " * 40
+    assert len(c(long, "Kurz.")) <= 3 * 5 + 80 and c(long, "Kurz.").endswith(".")
+    assert c("Hello (world)", "x") == "Hello (world)"  # no Cyrillic: brackets stay
 
 
 def test_local_drops_thinking_option_if_the_model_rejects_it():
@@ -223,7 +254,7 @@ def test_ollama_gpu_share_and_warning(monkeypatch):
 def test_warm_up_loads_the_local_model():
     t, fake = make_local(["ok"])
     t.warm_up()
-    assert fake.calls[0]["max_completion_tokens"] == 1
+    assert fake.calls[0]["max_tokens"] == 1
     assert fake.calls[0]["extra_body"] == {"keep_alive": "30m"}
     t, fake = make_local([ConnectionError("not running")])
     t.warm_up()  # no error: the first sentence reports it

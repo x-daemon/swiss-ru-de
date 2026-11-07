@@ -443,6 +443,8 @@ class App:
         tr = self.transcriber
         self.tuning = choose(self.s.speed, tr.pass_seconds, tr.device)
         tr.beam_size = self.tuning.beam
+        if self.dialect_transcriber is not None:
+            self.dialect_transcriber.beam_size = self.tuning.beam
         self.options.dialect = self._dialect_wanted()
         message = self.tuning.describe(tr.pass_seconds)
         if self.s.top == "dialect" and not self.tuning.dialect:
@@ -459,7 +461,10 @@ class App:
                 from .asr import Transcriber, dialect_prompt
 
                 self.status("Loading dialect model for the top line …")
-                tr = Transcriber(self.s.dialect_model, device=self.s.compute, beam_size=1,
+                # beam search like the main model when the PC is fast enough (GPU): a more
+                # exact dialect line; it runs in its own thread, so it never delays anything
+                beam = self.tuning.beam if self.tuning is not None else 1
+                tr = Transcriber(self.s.dialect_model, device=self.s.compute, beam_size=beam,
                                  log=self.status, prompt=dialect_prompt(self.s.dialect))
             except Exception as e:
                 self.status(f"Dialect model not available ({e}); showing Standard German on top.")
@@ -746,7 +751,8 @@ class SettingsDialog:
         "grok": "grok-4.7",
         "local": "gemma3:4b = fast, fits next to the speech models on any 8-12 GB graphics "
                  "card. gemma3:12b = more precise, needs 16 GB (on 12 GB it spills to the "
-                 "processor and gets minutes behind). Install: ollama pull gemma3:4b",
+                 "processor and gets minutes behind). translategemma:4b = translation only "
+                 "(no German correction), same size. Install: ollama pull gemma3:4b",
     }
 
     def _show_translator(self) -> None:

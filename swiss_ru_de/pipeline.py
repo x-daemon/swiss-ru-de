@@ -208,7 +208,7 @@ class TranslationWorker:
             translator = None
             try:
                 translator = self.translators(line.target)
-                dialect = self._dialect_of(line) if translator.corrects else None
+                dialect = self._dialect_of(line) if translator.uses_dialect else None
                 correct = getattr(self.options, "correct_german", True)
                 started = time.monotonic()
                 fixed, text = translator.process(line.german, dialect, list(self.context), line.target,

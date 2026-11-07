@@ -253,3 +253,14 @@ def test_split_and_breakfast_rules():
     assert split_sentences("Er kam um 3.5 Uhr. z.B. heute. Ja!") == ["Er kam um 3.5 Uhr. z.B. heute.", "Ja!"]
     assert normalize_swiss_terms("Weil ich nie zum Morgen esse.") == "Weil ich nie zum Frühstück esse."
     assert normalize_swiss_terms("Ich stehe am Morgen früh auf.") == "Ich stehe am Morgen früh auf."
+
+
+def test_gipfel_compounds_and_neuter_are_croissants():
+    n = normalize_swiss_terms
+    assert n("Ehm, ein Gipfel, also Buttergipfel. Oder noch das Gipfel allein?") == \
+        "Ehm, ein Croissant, also Buttercroissant. Oder noch das Croissant allein?"
+    assert n("Zwei Schoggigipfeli und ein Kafi.") == "Zwei Schoggicroissants und ein Kaffee."
+    assert n("Hast du etwas dazu getrunken? Nur ein Gipfel.") == \
+        "Hast du etwas dazu getrunken? Nur ein Croissant."
+    assert n("Der Gipfel ist hoch, wir trinken oben Tee.") == "Der Gipfel ist hoch, wir trinken oben Tee."
+    assert n("Das Gipfeltreffen war lang.") == "Das Gipfeltreffen war lang."
