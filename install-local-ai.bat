@@ -35,10 +35,12 @@ if errorlevel 1 (
     timeout /t 5 /nobreak >nul
 )
 
-rem Choose the model by graphics memory: 12B needs about 8 GB next to the speech models.
+rem Choose the model by graphics memory. It must fit NEXT TO the two speech models
+rem (about 2.5 GB) and Windows: gemma3:4b needs about 5 GB, gemma3:12b about 10 GB.
+rem If it does not fit, Ollama runs part of it on the processor - minutes behind.
 set "MODEL=gemma3:4b"
 for /f "tokens=1" %%m in ('nvidia-smi --query-gpu=memory.total --format=csv^,noheader^,nounits 2^>nul') do (
-    if %%m GEQ 11000 set "MODEL=gemma3:12b"
+    if %%m GEQ 15000 set "MODEL=gemma3:12b"
 )
 echo.
 echo === 3/4  Downloading the model !MODEL! (once; 3-8 GB) ...
@@ -64,7 +66,7 @@ exit /b 0
 echo.
 echo Something went wrong - see the messages above. Manual way:
 echo   1. install Ollama from https://ollama.com/download
-echo   2. in a terminal:  ollama pull gemma3:12b
+echo   2. in a terminal:  ollama pull gemma3:4b
 echo   3. swiss-ru-de Settings - Translator - Local AI on this PC
 if /i not "%NOPAUSE%"=="nopause" pause
 exit /b 1

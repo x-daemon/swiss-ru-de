@@ -203,7 +203,7 @@ class FakeClaude(Translator):
     def __init__(self):
         self.seen = []
 
-    def process(self, german, dialect=None, context=(), target="ru"):
+    def process(self, german, dialect=None, context=(), target="ru", correct=True):
         self.seen.append((german, dialect, list(context), target))
         fixed = german.replace("Gipfel", "Gipfeli")
         return fixed, ("RU:" + fixed if target == "ru" else None)

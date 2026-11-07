@@ -133,7 +133,8 @@ class App:
         self.s = settings
         self.settings_file = settings_file
         self.events: queue.Queue = queue.Queue()
-        self.options = Options(target=settings.target, dialect=settings.top == "dialect")
+        self.options = Options(target=settings.target, dialect=settings.top == "dialect",
+                               correct_german=self._german_shown(settings))
         self.hub = TranslatorHub(settings.translator, settings.claude_model or None,
                                  settings.offline_model, settings.dialect, log=self.status,
                                  openai_model=settings.openai_model, gemini_model=settings.gemini_model,
@@ -338,6 +339,7 @@ class App:
         except OSError as e:
             self.status(f"Could not save settings: {e}")
         self.options.target = new.target
+        self.options.correct_german = self._german_shown(new)
         if new.speed != old.speed and self.transcriber is not None:
             self._apply_tuning()
             self._needs_restart = True  # new segment length
@@ -388,6 +390,24 @@ class App:
         self._start_capture()
         if self.options.dialect:
             self._load_dialect()
+        self._warm_translator()
+
+    def _warm_translator(self) -> None:
+        """Local AI: load its model now (after the speech models, so the check below sees
+        the real graphics memory), not at the first sentence."""
+        from .translate import resolve_kind
+
+        if resolve_kind(self.s.translator) != "local":
+            return
+        try:
+            translator = self.hub.get(self.options.target)
+        except Exception:
+            return  # the first sentence reports the problem
+        if hasattr(translator, "warm_up"):
+            translator.warm_up()
+            warning = translator.gpu_warning()
+            if warning:
+                self.status(warning)
 
     def _load_local_model(self) -> bool:
         if self.transcriber is not None:
@@ -402,6 +422,12 @@ class App:
             return False
         self._apply_tuning()
         return True
+
+    @staticmethod
+    def _german_shown(s: Settings) -> bool:
+        """Is Standard German on screen? If not, the AI only writes the Russian - half the
+        answer, so twice as fast."""
+        return s.top == "german" or s.target == "de"
 
     def _dialect_wanted(self) -> bool:
         if self.s.top != "dialect":
@@ -718,9 +744,9 @@ class SettingsDialog:
         "openai": "gpt-6-luna = fast and cheap, gpt-6-sol / gpt-6-astra = stronger.",
         "gemini": "gemini-3.8-flash = fast, gemini-3.5-flash-lite = cheapest.",
         "grok": "grok-4.7",
-        "local": "Install Ollama (ollama.com), then in a terminal: ollama pull gemma3:12b "
-                 "(8 GB, fits next to the speech models on a 12 GB graphics card). "
-                 "Smaller: gemma3:4b. Translation only: translategemma:12b.",
+        "local": "gemma3:4b = fast, fits next to the speech models on any 8-12 GB graphics "
+                 "card. gemma3:12b = more precise, needs 16 GB (on 12 GB it spills to the "
+                 "processor and gets minutes behind). Install: ollama pull gemma3:4b",
     }
 
     def _show_translator(self) -> None:
@@ -779,7 +805,7 @@ class SettingsDialog:
         script = Path(__file__).resolve().parent.parent / "install-local-ai.bat"
         if sys.platform != "win32" or not script.exists():
             messagebox.showinfo("Local AI", "Install Ollama from https://ollama.com/download, then run "
-                                "in a terminal:\n\n    ollama pull gemma3:12b", parent=self.win)
+                                "in a terminal:\n\n    ollama pull gemma3:4b", parent=self.win)
             return
         subprocess.Popen(["cmd", "/c", "start", "Install local AI", str(script)], cwd=str(script.parent))
         messagebox.showinfo("Local AI", "The installer runs in its own window (a few minutes: Ollama, "
@@ -838,6 +864,9 @@ class SettingsDialog:
         lines = report(getattr(tr, "pass_seconds", None), getattr(tr, "device", None))
         if self.app.tuning is not None:
             lines.append("Now: " + self.app.tuning.describe(tr.pass_seconds))
+        stats = getattr(self.app.pipeline, "stats", None)
+        if stats is not None:
+            lines.append(stats.summary())
         messagebox.showinfo("This PC", "\n\n".join(lines), parent=self.win)
 
     def save(self) -> None:

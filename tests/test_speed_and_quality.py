@@ -31,10 +31,70 @@ def test_dialect_line_is_skipped_while_speech_is_waiting():
         p.segments.put(Segment(i * 20.0, i * 20.0 + 20, np.zeros(16000, np.float32)))
     p.segments.put(_STOP)
     p.worker.start()
+    p._dialect.start()
     p._asr_loop()
-    p.worker.close()
-    assert [l.dialect for l in lines] == [None, None, "Satzli 1"]  # only once idle
+    p.stop()
+    assert sorted(l.dialect or "" for l in lines) == ["", "", "Satzli 1"]  # only once idle
     assert all(l.translation for l in lines)  # translation never waits for it
+
+
+def test_recognition_does_not_wait_for_the_dialect_line():
+    import threading
+    import time
+
+    lines = []
+    release = threading.Event()
+
+    class SlowDialect(FakeTranscriber):
+        def transcribe(self, audio):
+            release.wait(5)  # e.g. on the processor
+            return super().transcribe(audio)
+
+    p = LivePipeline(FakeSource(silence(0.1)), FakeTranscriber(), FakeRu(),
+                     LineBook(on_line=lines.append), lambda s: None,
+                     dialect_transcriber=SlowDialect("Satzli"))
+    p.options.dialect = True
+    p.worker.start()
+    p._dialect.start()
+    asr = threading.Thread(target=p._asr_loop)
+    asr.start()
+    p.segments.put(Segment(0, 2, np.zeros(16000, np.float32)))
+    time.sleep(0.3)  # the dialect pass of line 1 is now running (and blocked)
+    p.segments.put(Segment(3, 5, np.zeros(16000, np.float32)))
+    p.segments.put(_STOP)
+    asr.join(2)
+    assert not asr.is_alive()  # recognition went on while the dialect line was busy
+    time.sleep(0.2)
+    assert [l.german for l in lines] == ["Satz 2"]  # line 2 had no dialect pass: done at once
+    release.set()
+    p.stop()
+    assert [l.dialect for l in sorted(lines, key=lambda l: l.id)] == ["Satzli 1", None]
+
+
+def test_stats_and_lag_warning():
+    from swiss_ru_de.pipeline import Stats, TranslationWorker
+
+    stats = Stats()
+    assert stats.summary() == "No sentences yet."
+    stats.add("recognition", 1.0)
+    stats.add("translation", 10.0)
+    stats.add("translation", 20.0)
+    assert stats.avg["translation"] == 13.0 and stats.slowest() == "translation"
+    status = []
+    worker = TranslationWorker(lambda t: FakeRu(), LineBook(), status.append, stats=stats)
+    worker.origin = time_now() - 100  # the stream started 100 s ago
+    line = SimpleNamespace(end=30.0)
+    worker._check_speed(line, FakeRu())
+    assert 69 < stats.lag < 72
+    assert "70 s behind" in status[0] and "slowest step" in status[0] and "translation 13.0 s" in status[0]
+    worker._check_speed(line, FakeRu())
+    assert len(status) == 1  # not repeated every sentence
+
+
+def time_now():
+    import time
+
+    return time.monotonic()
 
 
 def test_gpu_libraries_missing_is_fine():

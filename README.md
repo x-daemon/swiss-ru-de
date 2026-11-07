@@ -48,8 +48,9 @@ GitHub Actions.
    1. Python 3.12, only if no Python 3.10+ is installed (via winget);
    2. swiss-ru-de with all translators, plus the CUDA libraries if an NVIDIA graphics card
       is found;
-   3. **Local AI**: Ollama and a translation model that fits the graphics card
-      (`gemma3:12b` with 12 GB or more, otherwise `gemma3:4b`). Settings are switched to it;
+   3. **Local AI**: Ollama and a translation model that fits the graphics card next to the
+      speech models (`gemma3:12b` with 16 GB or more, otherwise `gemma3:4b`). Settings are
+      switched to it;
    4. the speech models, so the first start is fast;
    5. **"Swiss RU-DE"** shortcuts on the desktop and in the Start menu;
    6. starts the app.
@@ -73,7 +74,7 @@ swiss-ru-de --gui
 ```
 
 For local AI on Linux/macOS, install Ollama from [ollama.com](https://ollama.com) and run
-`ollama pull gemma3:12b`.
+`ollama pull gemma3:4b`.
 
 ## The window
 
@@ -133,7 +134,7 @@ double-click or press Esc to close it.
 | **ChatGPT** (OpenAI) | very good | platform.openai.com → API keys | `gpt-6-luna` (fast, cheap); `gpt-6-sol`, `gpt-6-astra` are stronger |
 | **Gemini** (Google) | very good | aistudio.google.com → Get API key | `gemini-3.8-flash`; `gemini-3.5-flash-lite` is cheapest |
 | **Grok** (xAI) | very good | console.x.ai → API keys | `grok-4.7` |
-| **Local AI** (Ollama / LM Studio) | good to very good, **stays on your PC** | no key | `gemma3:12b`; `gemma3:4b` is smaller; `translategemma:12b` translates only |
+| **Local AI** (Ollama / LM Studio) | good to very good, **stays on your PC** | no key | `gemma3:4b` (fast, up to 12 GB graphics memory); `gemma3:12b` (16 GB+); `translategemma:12b` translates only |
 | **DeepL** | good | deepl.com/pro-api (free key available) | – |
 | **offline** | basic | no key | NLLB-200, runs on your PC |
 
@@ -161,19 +162,33 @@ With an NVIDIA card (8 GB or more), a local AI model can do Claude's job without
 It corrects the recognised German and translates with context, and nothing leaves the PC.
 
 1. Install **[Ollama](https://ollama.com)** (Windows installer). It runs in the background.
-2. In a terminal, download the model (once, about 8 GB):
+2. In a terminal, download the model (once, about 3 GB):
    ```bash
-   ollama pull gemma3:12b
+   ollama pull gemma3:4b
    ```
 3. In *Settings → Translator*, choose **Local AI on this PC**. The model list shows the models
-   Ollama has installed; pick `gemma3:12b` and save.
+   Ollama has installed; pick one and save. With no model chosen, the app uses the first
+   installed of `gemma3:4b`, `gemma3:12b`, `qwen3:14b`.
 
 Notes:
 
-* **Graphics memory:** the speech models now run in `int8_float16` on the GPU, half the
-  memory of before, so a 12 GB card holds both them and `gemma3:12b`. With 8 GB, use
-  `gemma3:4b`.
-* **First sentence:** it takes a few seconds while Ollama loads the model.
+* **Graphics memory decides the speed.** The model must fit into the graphics card *next to*
+  the two speech models (about 2.5 GB) and Windows. `gemma3:4b` needs about 5 GB, so it fits
+  on any 8–12 GB card. `gemma3:12b` needs about 10 GB: on a 12 GB card (e.g. RTX 3060) it
+  does not fit, Ollama runs part of it on the processor, and the subtitles fall **minutes**
+  behind. Use it only with 16 GB or more. The app checks this when it starts and says so in
+  the status line ("runs 40 % on the processor …").
+* **Speed settings for local AI:** no "thinking" (Qwen3), temperature 0.2 (literal
+  translations), a cap on the answer length (a small model that starts repeating itself
+  cannot run for minutes), and the model is kept loaded for 30 minutes.
+* **Only the Russian is asked for** when the corrected German isn't on screen (top part =
+  dialect, bottom part = Russian): half the answer, so about twice as fast. Set the top part
+  to *Standard German* to see the AI-corrected German.
+* **The dialect line never holds anything up.** It runs in its own thread, only when no other
+  speech is waiting, and the AI stops waiting for it when it keeps coming late.
+* **Lagging behind?** The status line says so (every minute while the subtitles are more than
+  15 s behind) and names the slowest step. *Settings → Check this PC* shows the time per step.
+* **First sentence:** the model is loaded when the app starts, so the first sentence is fast.
 * **LM Studio** works too: start its local server and set *Server* to
   `http://localhost:1234/v1`.
 * **Translation-only models** such as `translategemma:12b` get a plain translation prompt. They
@@ -325,7 +340,7 @@ dialect is welcome.
 
 1. Распакуйте архив и дважды щёлкните **`install-windows.bat`**. Он сам установит:
    Python (если его нет), программу, поддержку видеокарты NVIDIA, локальный ИИ (Ollama +
-   модель перевода по объёму видеопамяти), модели распознавания и ярлык **Swiss RU-DE** на
+   модель перевода по объёму видеопамяти: до 12 ГБ `gemma3:4b`, от 16 ГБ `gemma3:12b`), модели распознавания и ярлык **Swiss RU-DE** на
    рабочем столе. Это займёт 10–30 минут, скачивается до 12 ГБ.
 2. Дальше запускайте программу ярлыком **Swiss RU-DE**.
 3. Откроется окно из двух частей. Сверху: швейцарский немецкий, как его произнесли (на диалекте).
@@ -342,6 +357,15 @@ dialect is welcome.
 *Settings → Check this PC…* показывает процессор, видеокарту и замеренную скорость, а также
 что ускорит работу именно на этом компьютере. Самое большое ускорение (примерно в 10 раз)
 даёт видеокарта NVIDIA.
+
+**Локальный ИИ (Ollama) отстаёт на минуты?** Почти всегда причина в видеопамяти: модель
+должна поместиться в видеокарту *рядом* с двумя моделями распознавания (около 2,5 ГБ).
+На карте 12 ГБ (например, RTX 3060) `gemma3:12b` не помещается, Ollama считает часть на
+процессоре, и перевод сильно запаздывает. Возьмите **`gemma3:4b`** (*Settings → Model*);
+`gemma3:12b` имеет смысл с 16 ГБ видеопамяти. Программа сама проверяет это при запуске и
+пишет в строке состояния. Если сверху показан диалект, ИИ пишет только русский перевод:
+ответ вдвое короче и вдвое быстрее. *Settings → Check this PC…* показывает, сколько секунд
+занимает каждый шаг.
 
 ## License
 

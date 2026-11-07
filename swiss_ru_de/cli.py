@@ -204,7 +204,9 @@ def main(argv: list[str] | None = None) -> int:
     from .pipeline import LineBook, Options
 
     book = LineBook(on_line=on_line)
-    options = Options(target=args.to, dialect=dialect_tr is not None)
+    # Only ask AI translators for the corrected German when it is printed: half the answer.
+    options = Options(target=args.to, dialect=dialect_tr is not None,
+                      correct_german=args.to in ("de", "both"))
     try:
         if cloud:
             return _run_cloud(args, dialect_tr, hub, book, options, on_status, overlay)

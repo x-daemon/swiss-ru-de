@@ -13,13 +13,14 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from collections import deque
 from typing import Callable
 
 import numpy as np
 
 from .config import SAMPLE_RATE
-from .pipeline import Line, LineBook, OnStatus, Options, TranslationWorker, _as_translators
+from .pipeline import Line, LineBook, OnStatus, Options, Stats, TranslationWorker, _as_translators
 from .segmenter import frame_db
 
 TICKS_PER_SECOND = 10_000_000  # Azure offsets are in 100 ns units
@@ -154,7 +155,9 @@ class CloudPipeline:
         self.dialect_transcriber = dialect_transcriber  # may be set later
         self.stop_event = threading.Event()
         self.error: BaseException | None = None
-        self.worker = TranslationWorker(_as_translators(translators), book, on_status)
+        self.stats = Stats()  # no lag here: Azure only hears speech, so its times skip silence
+        self.worker = TranslationWorker(_as_translators(translators), book, on_status,
+                                        options=self.options, stats=self.stats)
         self.gate = SpeechGate()
         self._lock = threading.Lock()
         self._current: Line | None = None  # sentence being spoken (partial text)
@@ -272,8 +275,10 @@ class CloudPipeline:
             tr = self.dialect_transcriber
             audio = self._audio(start, end)
             if tr is not None and audio.size:
+                started = time.monotonic()
                 try:
                     dialect = tr.transcribe(audio)
                 except Exception as e:
                     self.on_status(f"Dialect recognition error: {e!r}")
+                self.stats.add("dialect", time.monotonic() - started)
             self.book.update(line_id, dialect=dialect or None, dialect_pending=False)

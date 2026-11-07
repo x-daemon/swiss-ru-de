@@ -129,8 +129,9 @@ class Translator:
         raise NotImplementedError
 
     def process(self, german: str, dialect: str | None = None, context: Sequence[str] = (),
-                target: str = "ru") -> tuple[str | None, str | None]:
-        """Returns (corrected German or None, translation or None)."""
+                target: str = "ru", correct: bool = True) -> tuple[str | None, str | None]:
+        """Returns (corrected German or None, translation or None). correct=False: the
+        corrected German is not needed (not displayed)."""
         if target == "de":
             return None, None
         return None, self.translate(german, context)
@@ -173,23 +174,30 @@ model. Less accurate overall, but it can keep words the first model changed.
 
 {_SWISS_HINTS}
 
-Answer with JSON:
+Answer with JSON containing exactly the fields the schema asks for:
 - "german": the utterance as correct, natural Standard German. Fix clear recognition errors \
 using both versions and the context. Keep the speaker's meaning and wording otherwise; do not \
 add or summarise; keep names, places and numbers.
-- "russian" (only when the schema asks for it): a natural, fluent Russian translation of that \
-German sentence. Keep Swiss terms that have no Russian equivalent in their usual form \
+- "russian": a natural, fluent Russian translation of what the speaker said (understood from \
+both versions and the context, with recognition errors fixed). Keep Swiss terms that have no Russian equivalent in their usual form \
 (e.g. Rösti -> рёшти)."""
 
+# "ru": corrected German + Russian; "de": corrected German only; "ru-only": Russian only (the
+# corrected German is not shown - about half the output, so local models answer faster).
+_FIELDS = {"ru": ["german", "russian"], "de": ["german"], "ru-only": ["russian"]}
 _SCHEMAS = {
-    target: {
+    mode: {
         "type": "object",
-        "properties": {"german": {"type": "string"}, **({"russian": {"type": "string"}} if target == "ru" else {})},
-        "required": ["german", "russian"] if target == "ru" else ["german"],
+        "properties": {f: {"type": "string"} for f in fields},
+        "required": fields,
         "additionalProperties": False,
     }
-    for target in ("ru", "de")
+    for mode, fields in _FIELDS.items()
 }
+
+
+def answer_mode(target: str, correct: bool) -> str:
+    return "de" if target == "de" else ("ru" if correct else "ru-only")
 
 LLM_KINDS = ("claude", "openai", "gemini", "grok", "local")  # these also correct recognition errors
 
@@ -204,6 +212,18 @@ def build_prompt(german: str, dialect: str | None, context: Sequence[str]) -> st
     return prompt
 
 
+def _partial_answer(text: str) -> dict | None:
+    found = {}
+    for field in ("german", "russian"):
+        m = re.search(rf'"{field}"\s*:\s*"((?:[^"\\]|\\.)*)', text or "")
+        if m:
+            try:
+                found[field] = json.loads(f'"{m.group(1).rstrip(chr(92))}"')
+            except ValueError:
+                found[field] = m.group(1)
+    return found or None
+
+
 def parse_answer(text: str, target: str) -> tuple[str | None, str | None]:
     """{"german": ..., "russian": ...} -> (corrected German, translation)."""
     empty = (None, "" if target == "ru" else None)
@@ -216,6 +236,8 @@ def parse_answer(text: str, target: str) -> tuple[str | None, str | None]:
             data = json.loads(match.group(0)) if match else None
         except ValueError:
             data = None
+    if not isinstance(data, dict):
+        data = _partial_answer(text)  # cut off (answer limit): keep what is there
     if not isinstance(data, dict):
         return empty
     fixed = str(data.get("german") or "").strip() or None
@@ -268,10 +290,10 @@ class ClaudeTranslator(Translator):
         )
 
     def process(self, german: str, dialect: str | None = None, context: Sequence[str] = (),
-                target: str = "ru") -> tuple[str | None, str | None]:
+                target: str = "ru", correct: bool = True) -> tuple[str | None, str | None]:
         a = self._anthropic
         target = "de" if target == "de" else "ru"
-        req = self._request(german, dialect, context, target)
+        req = self._request(german, dialect, context, answer_mode(target, correct))
         try:
             if self.model in _FALLBACK_MODELS:
                 # if a request is declined, the API retries it on a fallback model
@@ -295,7 +317,7 @@ class ClaudeTranslator(Translator):
         return parse_answer(next((b.text for b in resp.content if b.type == "text"), ""), target)
 
     def translate(self, text: str, context: Sequence[str] = ()) -> str:
-        return self.process(text, None, context, "ru")[1] or ""
+        return self.process(text, None, context, "ru", correct=False)[1] or ""
 
 
 # ------------------------------------------------- ChatGPT / Gemini / Grok
@@ -314,11 +336,29 @@ PROVIDERS = {
     # Runs on this PC (GPU): Ollama or LM Studio serve an OpenAI-compatible API, no key.
     "local": dict(label="Local AI (Ollama / LM Studio)", short="Local AI",
                   base_url="http://localhost:11434/v1",
-                  models=["gemma3:12b", "gemma3:4b", "qwen3:14b", "translategemma:12b"],
-                  reasoning_effort=None, where="ollama.com, then: ollama pull gemma3:12b"),
+                  models=["gemma3:4b", "gemma3:12b", "qwen3:14b", "translategemma:12b"],
+                  reasoning_effort=None, where="ollama.com, then: ollama pull gemma3:4b"),
 }
 LOCAL_SERVERS = {"Ollama": "http://localhost:11434/v1", "LM Studio": "http://localhost:1234/v1"}
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def local_gpu_share(base_url: str, model: str, timeout: float = 2.0) -> float | None:
+    """Ollama only: the part of the loaded model that is in graphics memory (1.0 = all).
+    A model that does not fit is partly run on the processor - many times slower."""
+    import urllib.request
+
+    root = base_url.rstrip("/").removesuffix("/v1")
+    try:
+        with urllib.request.urlopen(f"{root}/api/ps", timeout=timeout) as r:
+            data = json.loads(r.read().decode("utf-8"))
+    except Exception:
+        return None  # not Ollama, or not reachable
+    for m in data.get("models", []):
+        if model in (m.get("name"), m.get("model")) or str(m.get("name", "")).startswith(model):
+            size = m.get("size") or 0
+            return (m.get("size_vram") or 0) / size if size else None
+    return None
 
 
 def local_models(base_url: str, timeout: float = 1.5) -> list[str]:
@@ -330,6 +370,17 @@ def local_models(base_url: str, timeout: float = 1.5) -> list[str]:
         return sorted(m.id for m in client.models.list())
     except Exception:
         return []
+
+
+def pick_local_model(base_url: str) -> str:
+    """No model chosen: the first suggested one that is installed (gemma3:4b first: it
+    fits into the graphics card next to the speech models, so it is fast)."""
+    suggested = PROVIDERS["local"]["models"]
+    installed = local_models(base_url)
+    for name in suggested:
+        if name in installed or f"{name}:latest" in installed:
+            return name
+    return installed[0] if installed else suggested[0]
 
 
 class OpenAICompatibleTranslator(Translator):
@@ -347,9 +398,10 @@ class OpenAICompatibleTranslator(Translator):
         self._openai = openai
         info = PROVIDERS[provider]
         self.provider = provider
-        self.model = model or info["models"][0]
-        self.name = f"{info['short']} ({self.model})"
         self.base_url = base_url or info["base_url"]
+        self.model = model or (pick_local_model(self.base_url) if provider == "local"
+                               else info["models"][0])
+        self.name = f"{info['short']} ({self.model})"
         if provider == "local":
             key = "local"  # Ollama / LM Studio need no key
             # the first request loads the model into the graphics card: allow time
@@ -370,6 +422,14 @@ class OpenAICompatibleTranslator(Translator):
         self.options: dict = {}
         if info["reasoning_effort"]:
             self.options["reasoning_effort"] = info["reasoning_effort"]  # faster answers
+        if provider == "local":
+            # Subtitles need a quick, literal answer: no "thinking" (Qwen3 etc.), little
+            # randomness (Gemma's default is 1.0), and keep the model loaded in the graphics
+            # card between sentences (Ollama unloads it after 5 idle minutes by default).
+            self.options["reasoning_effort"] = "none"
+            self.options["temperature"] = 0.2
+            if ":11434" in self.base_url:
+                self.options["extra_body"] = {"keep_alive": "30m"}
 
     def _request(self, german: str, dialect: str | None, context: Sequence[str], target: str) -> dict:
         schema = {"type": "json_schema",
@@ -379,9 +439,42 @@ class OpenAICompatibleTranslator(Translator):
             messages=[{"role": "system", "content": self.system},
                       {"role": "user", "content": build_prompt(german, dialect, context)}],
             response_format=self.options.get("response_format", schema),
-            max_completion_tokens=4096,
+            max_completion_tokens=self._max_tokens(german, target),
             **{k: v for k, v in self.options.items() if k != "response_format"},
         )
+
+    def warm_up(self) -> None:
+        """Local AI: load the model into the graphics card now, not at the first sentence."""
+        if self.provider != "local":
+            return
+        try:
+            self.client.chat.completions.create(
+                model=self.model, messages=[{"role": "user", "content": "Hallo"}],
+                max_completion_tokens=1,
+                **{k: v for k, v in self.options.items() if k in ("extra_body",)})
+        except Exception:
+            pass  # the first real sentence reports any problem
+
+    def gpu_warning(self) -> str | None:
+        """Local AI (Ollama), checked once: a warning if the model did not fit into the
+        graphics card. Then it partly runs on the processor - many times slower."""
+        if self.provider != "local" or getattr(self, "_gpu_checked", False):
+            return None
+        self._gpu_checked = True
+        share = local_gpu_share(self.base_url, self.model)
+        if share is None or share >= 0.9:
+            return None
+        where = "entirely on the processor" if share < 0.05 else f"{100 - share * 100:.0f} % on the processor"
+        return (f"Local AI ({self.model}) runs {where}: the graphics memory is full, so it is "
+                "slow. Choose gemma3:4b (Settings → Model), set the top part to Standard German, "
+                "or close other programs that use the graphics card.")
+
+    def _max_tokens(self, german: str, mode: str) -> int:
+        if self.provider != "local":
+            return 4096  # cloud reasoning models count their thinking in this limit
+        # A small local model can get stuck repeating itself; on a graphics card that is
+        # 30-80 tokens per second, so cap the answer near what the sentence needs.
+        return min(4096, 128 + 6 * len(_FIELDS[mode]) * len(german.split()))
 
     def _plain_translation(self, german: str, context: Sequence[str]) -> str:
         text = normalize_swiss_terms(german, context)
@@ -391,9 +484,10 @@ class OpenAICompatibleTranslator(Translator):
         return _THINK.sub("", resp.choices[0].message.content or "").strip()
 
     def process(self, german: str, dialect: str | None = None, context: Sequence[str] = (),
-                target: str = "ru") -> tuple[str | None, str | None]:
+                target: str = "ru", correct: bool = True) -> tuple[str | None, str | None]:
         o = self._openai
         target = "de" if target == "de" else "ru"
+        mode = answer_mode(target, correct)
         if self.plain:
             if target == "de":
                 return None, None
@@ -405,12 +499,16 @@ class OpenAICompatibleTranslator(Translator):
                 raise TranslationError(self._not_installed()) from e
         for _ in range(3):  # retries only to drop options a model does not support
             try:
-                resp = self.client.chat.completions.create(**self._request(german, dialect, context, target))
+                resp = self.client.chat.completions.create(**self._request(german, dialect, context, mode))
                 break
             except o.BadRequestError as e:
                 message = str(e).lower()
-                if "reasoning" in message and "reasoning_effort" in self.options:
+                if ("reasoning" in message or "think" in message) and "reasoning_effort" in self.options:
                     del self.options["reasoning_effort"]
+                elif "keep_alive" in message and "extra_body" in self.options:
+                    del self.options["extra_body"]
+                elif "temperature" in message and "temperature" in self.options:
+                    del self.options["temperature"]
                 elif ("response_format" in message or "json_schema" in message) and \
                         "response_format" not in self.options:
                     self.options["response_format"] = {"type": "json_object"}
@@ -438,7 +536,7 @@ class OpenAICompatibleTranslator(Translator):
         return parse_answer(choice.message.content or "", target)
 
     def translate(self, text: str, context: Sequence[str] = ()) -> str:
-        return self.process(text, None, context, "ru")[1] or ""
+        return self.process(text, None, context, "ru", correct=False)[1] or ""
 
     def _unreachable(self) -> str:
         return (f"Local AI not reachable at {self.base_url}. Start Ollama (or LM Studio's "

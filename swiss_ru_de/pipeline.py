@@ -58,6 +58,33 @@ class Options:
     target: str = "ru"  # "ru", "de" or "both"
     dialect: bool = False  # also transcribe the dialect as spoken
     paused: bool = False
+    correct_german: bool = True  # AI translators also return the corrected German (if shown)
+
+
+class Stats:
+    """How long each step takes (moving average) and how far subtitles lag behind speech."""
+
+    STEPS = ("recognition", "dialect", "translation")
+
+    def __init__(self):
+        self.avg: dict[str, float] = {}
+        self.lag = 0.0
+        self._lock = threading.Lock()
+
+    def add(self, step: str, seconds: float) -> None:
+        with self._lock:
+            old = self.avg.get(step)
+            self.avg[step] = seconds if old is None else 0.7 * old + 0.3 * seconds
+
+    def summary(self) -> str:
+        with self._lock:
+            parts = [f"{s} {self.avg[s]:.1f} s" for s in self.STEPS if s in self.avg]
+        text = "Per sentence: " + ", ".join(parts) if parts else "No sentences yet"
+        return text + (f". Subtitles are {self.lag:.0f} s behind the speech." if self.lag >= 3 else ".")
+
+    def slowest(self) -> str | None:
+        with self._lock:
+            return max(self.avg, key=self.avg.get) if self.avg else None
 
 
 class LineBook:
@@ -104,12 +131,18 @@ class TranslationWorker:
     """Translates German lines in the background, keeping a little context."""
 
     def __init__(self, translators: Callable[[str], Translator], book: LineBook,
-                 on_status: OnStatus, context_lines: int = 3, dialect_wait: float = 1.5):
+                 on_status: OnStatus, context_lines: int = 3, dialect_wait: float = 1.5,
+                 options: Options | None = None, stats: Stats | None = None):
         self.translators = translators
         self.book = book
         self.on_status = on_status
         self.context: deque[str] = deque(maxlen=context_lines)
         self.dialect_wait = dialect_wait
+        self.options = options
+        self.stats = stats or Stats()
+        self.origin: float | None = None  # monotonic time when the audio stream started
+        self._dialect_misses = 0
+        self._lag_warned_at = 0.0
         self.q: queue.Queue = queue.Queue()
         self._last_error = ""
         self.thread = threading.Thread(target=self._run, name="translate", daemon=True)
@@ -123,7 +156,7 @@ class TranslationWorker:
 
     def close(self, wait: bool = True) -> None:
         self.q.put(_STOP)
-        if wait:
+        if wait and self.thread.ident is not None:
             self.thread.join()
 
     def _error(self, msg: str) -> None:
@@ -132,25 +165,56 @@ class TranslationWorker:
             self.on_status(f"Translation failed: {msg}")
 
     def _dialect_of(self, line: Line) -> str | None:
-        """The dialect line is a second hearing of the same audio; Claude uses it to fix
-        recognition errors. Wait a moment for it - but never long."""
-        deadline = time.monotonic() + self.dialect_wait
+        """The dialect line is a second hearing of the same audio; the AI uses it to fix
+        recognition errors. Wait a moment for it - but never long, and not at all while it
+        keeps being late (e.g. computed on the processor)."""
+        wait = self.dialect_wait if self._dialect_misses < 2 else 0.0
+        deadline = time.monotonic() + wait
         while True:
             current = self.book.get(line.id)
             if current is None or not current.dialect_pending:
+                self._dialect_misses = 0
                 return current.dialect if current else None
             if time.monotonic() >= deadline:
+                self._dialect_misses += 1
                 return None
             time.sleep(0.05)
+
+    def _check_speed(self, line: Line, translator: Translator) -> None:
+        """Tell the user when subtitles fall behind, and why."""
+        if self.origin is not None:
+            self.stats.lag = max(0.0, time.monotonic() - (self.origin + line.end))
+        check = getattr(translator, "gpu_warning", None)
+        warning = check() if callable(check) else None
+        if warning:
+            self.on_status(warning)
+            return
+        now = time.monotonic()
+        if self.stats.lag > 15 and now - self._lag_warned_at > 60:
+            self._lag_warned_at = now
+            slowest = self.stats.slowest()
+            hint = {"translation": " The translation is the slowest step: try a smaller or "
+                                   "faster model (Settings → Model).",
+                    "dialect": " The dialect line is the slowest step: set the top part to "
+                               "Standard German.",
+                    "recognition": " Speech recognition is the slowest step: see Settings → "
+                                   "Check this PC."}.get(slowest or "", "")
+            self.on_status(self.stats.summary() + hint)
 
     def _run(self) -> None:
         while (line := self.q.get()) is not _STOP:
             german, text = line.german, None
             failed = "" if line.target != "de" else None
+            translator = None
             try:
                 translator = self.translators(line.target)
                 dialect = self._dialect_of(line) if translator.corrects else None
-                fixed, text = translator.process(line.german, dialect, list(self.context), line.target)
+                correct = getattr(self.options, "correct_german", True)
+                started = time.monotonic()
+                fixed, text = translator.process(line.german, dialect, list(self.context), line.target,
+                                                 correct=correct)
+                if line.target != "de" or translator.corrects:
+                    self.stats.add("translation", time.monotonic() - started)
                 german = fixed or german
                 self._last_error = ""
             except TranslationError as e:
@@ -161,6 +225,8 @@ class TranslationWorker:
                 self._error(repr(e))
             self.context.append(german)
             self.book.update(line.id, german=german, translation=text, translation_pending=False)
+            if translator is not None:
+                self._check_speed(line, translator)
 
 
 def merge_segments(segments: list[Segment]) -> Segment:
@@ -174,6 +240,11 @@ def merge_segments(segments: list[Segment]) -> Segment:
             parts.append(gap)
         parts.append(s.audio)
     return Segment(segments[0].start, segments[-1].end, np.concatenate(parts))
+
+
+def _join(thread: threading.Thread, timeout: float) -> None:
+    if thread.ident is not None:  # started
+        thread.join(timeout)
 
 
 def _as_translators(t) -> Callable[[str], Translator]:
@@ -195,15 +266,22 @@ class LivePipeline:
         self.on_status = on_status
         self.segments: queue.Queue = queue.Queue()
         self.stop_event = threading.Event()
-        self.worker = TranslationWorker(_as_translators(translators), book, on_status)
+        self.stats = Stats()
+        self.worker = TranslationWorker(_as_translators(translators), book, on_status,
+                                        options=self.options, stats=self.stats)
         self._capture = threading.Thread(target=self._capture_loop, name="capture", daemon=True)
         self._asr = threading.Thread(target=self._asr_loop, name="asr", daemon=True)
+        # The dialect line has its own thread, so recognition never waits for it.
+        self._dialect_jobs: queue.Queue = queue.Queue()
+        self._dialect = threading.Thread(target=self._dialect_loop, name="dialect", daemon=True)
+        self._dialect_busy = False
         self._lag_warned = False
         self._carry: Segment | None = None
         self.error: BaseException | None = None
 
     def start(self) -> "LivePipeline":
         self.worker.start()
+        self._dialect.start()
         self._asr.start()
         self._capture.start()
         return self
@@ -211,8 +289,11 @@ class LivePipeline:
     def stop(self, wait: bool = True) -> None:
         self.stop_event.set()
         if wait:
-            self._capture.join(timeout=3)
-            self._asr.join(timeout=60)
+            _join(self._capture, 3)
+            _join(self._asr, 60)
+        self._dialect_jobs.put(_STOP)
+        if wait:
+            _join(self._dialect, 60)
             self.worker.close()
 
     def wait(self, timeout: float | None = None) -> bool:
@@ -225,10 +306,13 @@ class LivePipeline:
             if not self.options.paused:
                 self.segments.put(seg)
 
+    def _opened(self, name: str) -> None:
+        self.worker.origin = time.monotonic()  # segment times count from here
+        self.on_status(f"Listening to {name}")
+
     def _capture_loop(self) -> None:
         try:
-            self.source.run(self._emit, self.stop_event,
-                            on_open=lambda name: self.on_status(f"Listening to {name}"))
+            self.source.run(self._emit, self.stop_event, on_open=self._opened)
         except Exception as e:
             self.error = e
             self.on_status(f"Audio capture stopped: {e}")
@@ -271,33 +355,65 @@ class LivePipeline:
                                "catch up. An NVIDIA GPU makes it about 10x faster.")
             seg = merge_segments(batch)
             # The dialect line costs a second speech-model pass. It is "best effort": only
-            # done when no other speech is waiting, so the translation never falls behind.
+            # done when no other speech is waiting and the previous one is finished, so it
+            # never delays recognition or translation.
             idle = self.segments.empty() and self._carry is None
-            dialect = self.dialect_transcriber if self.options.dialect and idle else None
-            process_segment(seg.start, seg.end, seg.audio, self.transcriber, dialect,
-                            self.book, self.worker, self.options.target, self.on_status)
+            want = (self.options.dialect and self.dialect_transcriber is not None and idle
+                    and not self._dialect_busy)
+            line = process_segment(seg.start, seg.end, seg.audio, self.transcriber, None,
+                                   self.book, self.worker, self.options.target, self.on_status,
+                                   dialect_later=want)
+            if line is not None and want:
+                self._dialect_busy = True
+                self._dialect_jobs.put((line.id, seg.audio))
+
+    def _dialect_loop(self) -> None:
+        while (job := self._dialect_jobs.get()) is not _STOP:
+            line_id, audio = job
+            text = transcribe_dialect(self.dialect_transcriber, audio, self.worker.stats,
+                                      self.on_status)
+            self.book.update(line_id, dialect=text or None, dialect_pending=False)
+            self._dialect_busy = False
+
+
+def transcribe_dialect(transcriber, audio, stats: Stats | None, on_status: OnStatus) -> str:
+    if transcriber is None:
+        return ""
+    started = time.monotonic()
+    try:
+        text = transcriber.transcribe(audio)
+    except Exception as e:
+        on_status(f"Dialect recognition error: {e!r}")
+        return ""
+    if stats is not None:
+        stats.add("dialect", time.monotonic() - started)
+    return text
 
 
 def process_segment(start, end, audio, transcriber, dialect_transcriber, book, worker,
-                    target, on_status, german: str | None = None) -> None:
-    """Standard German first (so translation can start), then the dialect line."""
+                    target, on_status, german: str | None = None,
+                    dialect_later: bool = False) -> Line | None:
+    """Standard German first (so translation can start), then the dialect line - here,
+    or (``dialect_later``) by the caller."""
+    stats = getattr(worker, "stats", None)
     if german is None:
+        started = time.monotonic()
         try:
             german = transcriber.transcribe(audio)
         except Exception as e:
             on_status(f"Recognition error: {e!r}")
-            return
+            return None
+        if stats is not None:
+            stats.add("recognition", time.monotonic() - started)
     if not german:
-        return
-    line = book.new(start, end, german, target, dialect=dialect_transcriber is not None)
+        return None
+    line = book.new(start, end, german, target,
+                    dialect=dialect_later or dialect_transcriber is not None)
     worker.put(line)
     if dialect_transcriber is not None:
-        try:
-            dialect = dialect_transcriber.transcribe(audio)
-        except Exception as e:
-            on_status(f"Dialect recognition error: {e!r}")
-            dialect = ""
+        dialect = transcribe_dialect(dialect_transcriber, audio, stats, on_status)
         book.update(line.id, dialect=dialect or None, dialect_pending=False)
+    return line
 
 
 def run_file(transcriber, translators, path: str, book: LineBook, on_status: OnStatus,
@@ -306,7 +422,8 @@ def run_file(transcriber, translators, path: str, book: LineBook, on_status: OnS
              load_audio: Callable[[str], np.ndarray] | None = None) -> None:
     """File / URL mode: recognise the whole file, translate while recognising."""
     options = options or Options()
-    worker = TranslationWorker(_as_translators(translators), book, on_status).start()
+    worker = TranslationWorker(_as_translators(translators), book, on_status,
+                               options=options).start()
     audio = None
     if dialect_transcriber is not None:
         if load_audio is None:
