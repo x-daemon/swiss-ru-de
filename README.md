@@ -195,10 +195,13 @@ are missing.
 
 The bottom header shows which translator is active (e.g. *перевод · offline, basic
 quality*). The offline translator is free, but translates literally. For example it turns *Zmorge*
-(breakfast) into "tomorrow". Common Swiss words (Zmorge, Velo, Natel, Gipfeli, Spital, …) are
-replaced by Standard German before it translates, which helps somewhat. The real fix is
+(breakfast) into "tomorrow". About 45 common Swiss words (Zmorge, Gipfeli, Weggli, Schoggi, Peperoni, Velo, Natel,
+Spital, …) are replaced by Standard German before it translates. Context is used too:
+*Gipfel* in a sentence about breakfast or a bakery becomes *Croissant*, not a mountain peak.
+This helps, but a small offline model still translates word by word. The real fix is
 **Claude** (best: uses the earlier sentences, knows Swiss words, corrects recognition errors)
-or **DeepL**. Paste a key in *Settings → Claude API key / DeepL API key*. It is stored in the
+or **DeepL**. Paste a key in *Settings → Claude API key / DeepL API key*. Under *Claude model*,
+choose **Opus 5.5** (best) or **Haiku 5.5** (fastest, a fraction of the cost). It is stored in the
 Windows Credential Manager, not in a file.
 
 ## Platform notes

@@ -599,6 +599,16 @@ class SettingsDialog:
         self.deepl_key = tk.StringVar()
         field("Claude API key", ttk.Entry(win, textvariable=self.claude_key, show="•", width=36),
               self._key_note("anthropic", "console.anthropic.com - best translation"))
+        from .translate import ClaudeTranslator
+
+        self.claude_models = {"Opus 5.5 - best quality": ClaudeTranslator.DEFAULT_MODEL,
+                              "Haiku 5.5 - fastest, much cheaper": "claude-haiku-5-5"}
+        current = s.claude_model or ClaudeTranslator.DEFAULT_MODEL
+        if current not in self.claude_models.values():
+            self.claude_models[current] = current
+        self.claude_model = ttk.Combobox(win, state="readonly", width=34, values=list(self.claude_models))
+        self.claude_model.set(next(k for k, v in self.claude_models.items() if v == current))
+        field("Claude model", self.claude_model)
         field("DeepL API key", ttk.Entry(win, textvariable=self.deepl_key, show="•", width=36),
               self._key_note("deepl", "deepl.com/pro-api - free key available"))
 
@@ -703,6 +713,7 @@ class SettingsDialog:
                        font_size=font_size, always_on_top=bool(self.on_top.get()),
                        model=self.model.get().strip() or s.model, compute=self.compute.get(),
                        recognizer=self.recognizers[self.recognizer.get()], speed=self.speed.get(),
+                       claude_model=self.claude_models[self.claude_model.get()],
                        azure_region=self.azure_region.get().strip() or "switzerlandnorth")
 
     def speed_check(self) -> None:

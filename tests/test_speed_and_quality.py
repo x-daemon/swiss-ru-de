@@ -144,3 +144,26 @@ def test_beam_size_auto_depends_on_device(monkeypatch):
         t = asr.Transcriber("x", device=device, log=lambda m: None)
         assert t.beam_size == beam
     assert asr.Transcriber("x", device="cpu", beam_size=3, log=lambda m: None).beam_size == 3
+
+
+def test_gipfeli_and_gipfel_in_food_talk_are_croissants():
+    n = normalize_swiss_terms
+    assert n("Zum Frühstück esse ich zwei Gipfel.") == "Zum Frühstück esse ich zwei Croissants."
+    assert n("Ich habe ein Gipfeli gekauft.") == "Ich habe ein Croissant gekauft."
+    assert n("Zwei Gipfelis und ein Weggli.") == "Zwei Croissants und ein Brötchen."
+    assert n("Nur einen Gipfel bitte.", ["Was möchtest du zum Zmorge?"]) == "Nur einen Croissant bitte."
+    assert n("Wir standen auf dem Gipfel des Eigers.") == "Wir standen auf dem Gipfel des Eigers."
+    assert n("Peperoni mit Rahm") == "Paprika mit Sahne"
+
+
+def test_offline_translator_uses_context_for_gipfel(monkeypatch):
+    t = make_offline()
+    seen = {}
+    t._ct2 = None
+    monkeypatch.setattr(OfflineTranslator, "_translate_torch", lambda self, text: seen.setdefault("t", text))
+    t.translate("Zwei Gipfel bitte.", ["Ich hätte gern einen Kaffee."])
+    assert seen["t"] == "Zwei Croissants bitte."
+
+
+def test_claude_prompt_knows_gipfel_at_breakfast():
+    assert "misrecognised \"Gipfeli\"" in translate.CLAUDE_SYSTEM

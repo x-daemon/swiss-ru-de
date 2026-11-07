@@ -19,40 +19,88 @@ from . import keys
 from .config import DEFAULT_OFFLINE_MODEL, DIALECTS
 
 # Swiss words the speech model often leaves in its German output. Machine translators
-# (offline, DeepL) translate them badly or literally, so they get the Standard German word.
-# Claude gets the original text: it knows these words and uses the context.
-SWISS_TERMS = {
-    r"z['’]?morge[n]?": "Frühstück",
-    r"z['’]?mittag": "Mittagessen",
-    r"z['’]?nacht": "Abendessen",
-    r"z['’]?vieri": "Zwischenmahlzeit",
-    r"z['’]?nüni": "Znüni-Pause",
-    r"velos": "Fahrräder",
-    r"velo": "Fahrrad",
-    r"natel": "Handy",
-    r"rüebli": "Karotten",
-    r"h[äe]rd[öo]pfel": "Kartoffeln",
-    r"gipfeli": "Croissant",
-    r"poulet": "Hähnchen",
-    r"glace": "Eis",
-    r"trottoir": "Gehweg",
-    r"billett?": "Fahrkarte",
-    r"chuchi": "Küche",
-    r"pöstler": "Briefträger",
-    r"spital": "Krankenhaus",
-    r"coiffeur": "Friseur",
-    r"grüezi( mitenand)?|grüessech|grüessu|hoi zäme|sali zäme": "Guten Tag",
-    r"merci vilmal|merci viel ?mal": "vielen Dank",
-    r"merci": "danke",
-    r"zäme": "zusammen",
-}
-_SWISS_RE = [(re.compile(rf"\b(?:{k})\b", re.IGNORECASE), v) for k, v in SWISS_TERMS.items()]
+# (offline, DeepL) translate them badly or literally (Gipfeli -> "peaks"), so they get the
+# Standard German word first. Claude gets the original text: it knows these words.
+# Order matters: plural forms before singular forms.
+SWISS_TERMS = [
+    # meals
+    (r"z['’]?morge[n]?", "Frühstück"),
+    (r"z['’]?mittag", "Mittagessen"),
+    (r"z['’]?nacht", "Abendessen"),
+    (r"z['’]?vieri", "Zwischenmahlzeit"),
+    (r"z['’]?nüni", "Znüni-Pause"),
+    # bakery, food and drink
+    (r"weggli|bürli|brötli", "Brötchen"),
+    (r"schoggis?", "Schokolade"),
+    (r"kafi|kaffi", "Kaffee"),
+    (r"kafi crème|kafi creme|café crème", "Kaffee mit Milch"),
+    (r"guetzlis?", "Kekse"),
+    (r"rüebli", "Karotten"),
+    (r"h[äe]rd[öo]pfel|erdäpfel", "Kartoffeln"),
+    (r"nüsslisalat", "Feldsalat"),
+    (r"peperonis?", "Paprika"),
+    (r"rahm", "Sahne"),
+    (r"chäs", "Käse"),
+    (r"poulet", "Hähnchen"),
+    (r"glace", "Eis"),
+    (r"zältli", "Bonbons"),
+    (r"konfi", "Marmelade"),
+    (r"wähe", "Obstkuchen"),
+    (r"cervelat", "Wurst"),
+    # everyday words
+    (r"velos", "Fahrräder"),
+    (r"velo", "Fahrrad"),
+    (r"töff", "Motorrad"),
+    (r"trottinett", "Tretroller"),
+    (r"natel", "Handy"),
+    (r"trottoir", "Gehweg"),
+    (r"billette|billets", "Fahrkarten"),
+    (r"billett?", "Fahrkarte"),
+    (r"chuchi", "Küche"),
+    (r"lavabo", "Waschbecken"),
+    (r"estrich", "Dachboden"),
+    (r"pöstler", "Briefträger"),
+    (r"spital", "Krankenhaus"),
+    (r"coiffeur", "Friseur"),
+    (r"znüni", "Pause"),
+    (r"büez|chrampf", "Arbeit"),
+    (r"grüezi( mitenand)?|grüessech|grüessu|hoi zäme|sali zäme", "Guten Tag"),
+    (r"merci vilmal|merci viel ?mal", "vielen Dank"),
+    (r"merci", "danke"),
+    (r"zäme", "zusammen"),
+    (r"uf widerluege|adieu", "auf Wiedersehen"),
+]
+_SWISS_RE = [(re.compile(rf"\b(?:{k})\b", re.IGNORECASE), v) for k, v in SWISS_TERMS]
+
+# "Gipfel" means a mountain peak - unless people talk about breakfast or a bakery, where the
+# speech model often writes "Gipfel" for the Swiss "Gipfeli" (croissant).
+_FOOD = re.compile(
+    r"\b(frühstück|zmorge|kaffee|kafi|bäcke(rei|r)|beck|essen|isst|esse|gegessen|ässe|butter|"
+    r"marmelade|konfi|brot|brötchen|zopf|croissants?|gipfeli|hunger|tee|milch|café|kaufen|"
+    r"gekauft|bestellt|frisch|warm|knusprig|schokolade|schoggi|teller|tisch|pause)\b",
+    re.IGNORECASE)
+_GIPFEL = re.compile(r"\b(Gipfel)(i)?(n|s)?\b", re.IGNORECASE)
 
 
-def normalize_swiss_terms(text: str) -> str:
+def normalize_swiss_terms(text: str, context: Sequence[str] = ()) -> str:
     for pattern, replacement in _SWISS_RE:
         text = pattern.sub(replacement, text)
-    return text
+    food = any(_FOOD.search(t) for t in (text, *context[-2:]))
+
+    def croissant(m: re.Match) -> str:
+        if not (m.group(2) or food):  # plain "Gipfel" outside food talk: a mountain peak
+            return m.group(0)
+        plural = bool(m.group(3)) or _plural_before(text, m)
+        return "Croissants" if plural else "Croissant"
+
+    return _GIPFEL.sub(croissant, text)
+
+
+def _plural_before(text: str, match: re.Match) -> bool:
+    before = text[: match.start()].split()[-1:] or [""]
+    word = before[0].lower()
+    return word.isdigit() and word != "1" or word in {
+        "zwei", "drei", "vier", "fünf", "sechs", "paar", "viele", "einige", "mehrere", "die"}
 
 
 class TranslationError(RuntimeError):
@@ -86,10 +134,15 @@ Chuchichäschtli, Grüessech, Grüezi, ade, hoi, zäme, nöd, nüt, chli, gönd,
 Typical traps, translate the meaning:
 - "zum Morgen", "Zmorge" = breakfast (Frühstück), not "tomorrow"; "Zmittag" = lunch; \
 "Znacht" = dinner; "Zvieri"/"Znüni" = snack.
-- Velo = bicycle, Natel = mobile phone, Rüebli = carrots, Härdöpfel = potatoes, Anke = butter, \
-Gipfeli = croissant, Poulet = chicken, Glace = ice cream, Spital = hospital, Billett = ticket, \
-Trottoir = pavement, poschte = to go shopping, parkieren = to park, luege = to look, \
-schaffe = to work, gäll = right?, öppe = about/sometimes.
+- Gipfeli = croissant. When people talk about breakfast, coffee or a bakery, "Gipfel" in the \
+text is a misrecognised "Gipfeli" (croissants), not a mountain peak.
+- Weggli/Bürli = bread roll, Zopf = braided Sunday bread, Schoggi = chocolate, Kafi = coffee, \
+Guetzli = biscuits, Peperoni = bell pepper (not salami), Rahm = cream, Anke = butter, \
+Rüebli = carrots, Härdöpfel = potatoes, Poulet = chicken, Glace = ice cream, Konfi = jam.
+- Velo = bicycle, Töff = motorbike, Trottinett = scooter, Natel = mobile phone, \
+Spital = hospital, Billett = ticket, Trottoir = pavement, Estrich = attic, Lavabo = sink, \
+Kollege = friend/mate, Büez/Chrampf = work, poschte = to go shopping, parkieren = to park, \
+luege = to look, schaffe = to work, gäll = right?, öppe = about/sometimes.
 - Swiss German often uses the perfect tense ("ich ha gha" = I had): use natural Russian tense.
 
 Translate only the text under "Translate:" into natural, fluent Russian.
@@ -187,7 +240,7 @@ class DeepLTranslator(Translator):
     def translate(self, text: str, context: Sequence[str] = ()) -> str:
         try:
             result = self.client.translate_text(
-                normalize_swiss_terms(text), source_lang="DE", target_lang="RU",
+                normalize_swiss_terms(text, context), source_lang="DE", target_lang="RU",
                 context=" ".join(context) or None,
             )
         except self._deepl.DeepLException as e:
@@ -261,7 +314,7 @@ class OfflineTranslator(Translator):
             self.gen["forced_bos_token_id"] = self.tok.convert_tokens_to_ids("rus_Cyrl")
 
     def translate(self, text: str, context: Sequence[str] = ()) -> str:
-        text = normalize_swiss_terms(text)
+        text = normalize_swiss_terms(text, context)
         if self._ct2 is not None:
             try:
                 return self._translate_ct2(text)
