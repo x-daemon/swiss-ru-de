@@ -57,10 +57,15 @@ def build_parser() -> argparse.ArgumentParser:
     out.add_argument("--save", metavar="FILE", help="also write a transcript (.srt or .txt)")
 
     tr = p.add_argument_group("translation")
-    tr.add_argument("--translator", choices=["auto", "claude", "deepl", "offline"], default="auto",
-                    help="auto = Claude if ANTHROPIC_API_KEY is set, else DeepL if DEEPL_AUTH_KEY "
-                         "is set, else offline")
+    tr.add_argument("--translator", default="auto",
+                    choices=["auto", "claude", "openai", "gemini", "grok", "deepl", "offline"],
+                    help="auto = the first with a key: Claude (ANTHROPIC_API_KEY), ChatGPT "
+                         "(OPENAI_API_KEY), Gemini (GEMINI_API_KEY), Grok (XAI_API_KEY), DeepL "
+                         "(DEEPL_AUTH_KEY), else offline")
     tr.add_argument("--claude-model", default=None, help="Claude model id (default claude-opus-5-5)")
+    tr.add_argument("--translator-model", default=None,
+                    help="model id for --translator openai/gemini/grok (default: the provider's "
+                         "fast model, e.g. gpt-6-luna, gemini-3.8-flash, grok-4.7)")
     tr.add_argument("--offline-model", default=DEFAULT_OFFLINE_MODEL,
                     help=f"offline translation model (default {DEFAULT_OFFLINE_MODEL})")
     tr.add_argument("--dialect", choices=list(DIALECTS), default="auto",
@@ -131,7 +136,9 @@ def main(argv: list[str] | None = None) -> int:
 
     from .translate import TranslationError, TranslatorHub
 
-    hub = TranslatorHub(args.translator, args.claude_model, args.offline_model, args.dialect, log=log)
+    hub = TranslatorHub(args.translator, args.claude_model, args.offline_model, args.dialect, log=log,
+                        **({f"{args.translator}_model": args.translator_model}
+                           if args.translator in ("openai", "gemini", "grok") else {}))
     if args.to != "de":
         try:
             log(f"Translation: {hub.get(args.to).name}")  # fail early, e.g. missing API key

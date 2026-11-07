@@ -135,7 +135,9 @@ class App:
         self.events: queue.Queue = queue.Queue()
         self.options = Options(target=settings.target, dialect=settings.top == "dialect")
         self.hub = TranslatorHub(settings.translator, settings.claude_model or None,
-                                 settings.offline_model, settings.dialect, log=self.status)
+                                 settings.offline_model, settings.dialect, log=self.status,
+                                 openai_model=settings.openai_model, gemini_model=settings.gemini_model,
+                                 grok_model=settings.grok_model)
         self.book = LineBook(on_update=lambda line: self.events.put(("line", line)))
         self.lines: dict[int, Line] = {}
         self.transcriber = None
@@ -208,8 +210,8 @@ class App:
         kind = resolve_kind(self.s.translator)
         if self.s.target != "de":
             subtitle += " · " + QUALITY_LABEL.get(kind, "")
-        elif kind == "claude":
-            subtitle += " · corrected by Claude"
+        elif kind in ("claude", "openai", "gemini", "grok"):
+            subtitle += " · corrected by " + QUALITY_LABEL[kind].split(",")[0]
         self.bottom.set_titles(title, subtitle)
 
     def _zoom(self, delta: int) -> None:
@@ -332,9 +334,12 @@ class App:
             self._apply_tuning()
             self._needs_restart = True  # new segment length
         self.options.dialect = self._dialect_wanted()
-        if (new.translator, new.dialect, new.claude_model) != (old.translator, old.dialect, old.claude_model):
+        translation = ("translator", "dialect", "claude_model", "openai_model", "gemini_model", "grok_model")
+        if any(getattr(new, f) != getattr(old, f) for f in translation):
             self.hub.configure(kind=new.translator, dialect=new.dialect,
-                               claude_model=new.claude_model or None)
+                               claude_model=new.claude_model or None,
+                               openai_model=new.openai_model or None,
+                               gemini_model=new.gemini_model or None, grok_model=new.grok_model or None)
         if self.dialect_transcriber is not None:
             from .asr import dialect_prompt
 
@@ -562,13 +567,17 @@ class SettingsDialog:
 
         def field(label, widget, note=None):
             frame, r = cols[col], rows[col]
-            ttk.Label(frame, text=label).grid(row=r, column=0, sticky="w", padx=(0, 12), pady=3)
+            label_widget = ttk.Label(frame, text=label)
+            label_widget.grid(row=r, column=0, sticky="w", padx=(0, 12), pady=3)
             widget.grid(in_=frame, row=r, column=1, sticky="we", pady=2)
             rows[col] += 1
+            note_widget = None
             if note:
-                ttk.Label(frame, text=note, style="Note.TLabel", wraplength=300,
-                          justify="left").grid(row=r + 1, column=1, sticky="w")
+                note_widget = ttk.Label(frame, text=note, style="Note.TLabel", wraplength=300,
+                                        justify="left")
+                note_widget.grid(row=r + 1, column=1, sticky="w")
                 rows[col] += 1
+            return label_widget, note_widget
 
         head("BOTTOM PANE")
         self.target = tk.StringVar(value=s.target)
@@ -593,28 +602,27 @@ class SettingsDialog:
         field("Dialect", self.dialect, "Optional: helps dialect spelling and translation.")
 
         head("TRANSLATION")
-        self.translator = ttk.Combobox(win, state="readonly", width=34,
-                                       values=["auto", "claude", "deepl", "offline"])
-        self.translator.set(s.translator)
-        field("Translator", self.translator,
-              "auto = Claude if its key is set, else DeepL, else offline (lowest quality). "
-              "Claude also corrects recognition errors.")
-        self.claude_key = tk.StringVar()
-        self.deepl_key = tk.StringVar()
-        field("Claude API key", ttk.Entry(win, textvariable=self.claude_key, show="•", width=36),
-              self._key_note("anthropic", "console.anthropic.com - best translation"))
-        from .translate import ClaudeTranslator
+        from .translate import PROVIDERS
 
-        self.claude_models = {"Opus 5.5 - best quality": ClaudeTranslator.DEFAULT_MODEL,
-                              "Haiku 5.5 - fastest, much cheaper": "claude-haiku-5-5"}
-        current = s.claude_model or ClaudeTranslator.DEFAULT_MODEL
-        if current not in self.claude_models.values():
-            self.claude_models[current] = current
-        self.claude_model = ttk.Combobox(win, state="readonly", width=34, values=list(self.claude_models))
-        self.claude_model.set(next(k for k, v in self.claude_models.items() if v == current))
-        field("Claude model", self.claude_model)
-        field("DeepL API key", ttk.Entry(win, textvariable=self.deepl_key, show="•", width=36),
-              self._key_note("deepl", "deepl.com/pro-api - free key available"))
+        self.kinds = {"auto - best one with a key": "auto", "Claude (Anthropic)": "claude",
+                      "ChatGPT (OpenAI)": "openai", "Gemini (Google)": "gemini", "Grok (xAI)": "grok",
+                      "DeepL": "deepl", "offline - free, basic quality": "offline"}
+        self.translator = ttk.Combobox(win, state="readonly", width=34, values=list(self.kinds))
+        self.translator.set(next((k for k, v in self.kinds.items() if v == s.translator),
+                                 list(self.kinds)[0]))
+        field("Translator", self.translator,
+              "Claude, ChatGPT, Gemini and Grok also correct recognition errors.")
+        self.api_key = tk.StringVar()
+        self.key_entry = ttk.Entry(win, textvariable=self.api_key, show="•", width=36)
+        _, self.key_note_label = field("API key", self.key_entry, " ")
+        self.llm_model = ttk.Combobox(win, width=34)  # editable: any model id works
+        _, self.model_note_label = field("Model", self.llm_model, " ")
+        self.typed_keys: dict[str, str] = {}
+        self.models = {"claude": s.claude_model or "claude-opus-5-5",
+                       **{p: getattr(s, f"{p}_model") or info["models"][0] for p, info in PROVIDERS.items()}}
+        self._shown: str | None = None
+        self.translator.bind("<<ComboboxSelected>>", lambda e: self._show_translator())
+        self._show_translator()
 
         column(1)
         head("AUDIO")
@@ -689,14 +697,61 @@ class SettingsDialog:
             return "Saved. Type a new key to replace it, or a single - to remove it."
         return f"Not set. Get one at {where}."
 
+    KEY_NAMES = {"claude": "anthropic", "openai": "openai", "gemini": "gemini", "grok": "grok",
+                 "deepl": "deepl"}
+    MODEL_NOTES = {
+        "claude": "claude-opus-5-5 = best, claude-haiku-5-5 = fastest and cheapest.",
+        "openai": "gpt-6-luna = fast and cheap, gpt-6-sol / gpt-6-astra = stronger.",
+        "gemini": "gemini-3.8-flash = fast, gemini-3.5-flash-lite = cheapest.",
+        "grok": "grok-4.7",
+    }
+
+    def _show_translator(self) -> None:
+        """Show the API key and model fields of the selected translator."""
+        from .translate import PROVIDERS, QUALITY_LABEL, resolve_kind
+
+        self._stash()
+        kind = self.kinds[self.translator.get()]
+        key_name = self.KEY_NAMES.get(kind)
+        if key_name:
+            where = PROVIDERS[kind]["where"] if kind in PROVIDERS else {
+                "claude": "console.anthropic.com", "deepl": "deepl.com/pro-api - free key available"}[kind]
+            self.key_entry.configure(state="normal")
+            self.api_key.set(self.typed_keys.get(kind, ""))
+            self.key_note_label.configure(text=self._key_note(key_name, where))
+        else:
+            self.api_key.set("")
+            self.key_entry.configure(state="disabled")
+            self.key_note_label.configure(
+                text=f"auto uses now: {QUALITY_LABEL.get(resolve_kind('auto'), '')}" if kind == "auto"
+                else "No key needed.")
+        if kind in self.models:
+            values = ["claude-opus-5-5", "claude-haiku-5-5"] if kind == "claude" else PROVIDERS[kind]["models"]
+            self.llm_model.configure(state="normal", values=values)
+            self.llm_model.set(self.models[kind])
+            self.model_note_label.configure(text=self.MODEL_NOTES[kind])
+        else:
+            self.llm_model.set("")
+            self.llm_model.configure(state="disabled", values=[])
+            self.model_note_label.configure(text=" ")
+        self._shown = kind
+
+    def _stash(self) -> None:
+        """Remember what was typed for the translator shown so far."""
+        if self._shown in self.KEY_NAMES:
+            self.typed_keys[self._shown] = self.api_key.get()
+        if self._shown in self.models:
+            self.models[self._shown] = self.llm_model.get().strip() or self.models[self._shown]
+
     def save_keys(self) -> bool:
         """Store typed keys in the system keychain. True if anything changed."""
         from . import keys
 
+        self._stash()
         changed = False
-        for name, var in (("anthropic", self.claude_key), ("deepl", self.deepl_key),
-                          ("azure", self.azure_key)):
-            value = var.get().strip()
+        typed = [(self.KEY_NAMES[k], v) for k, v in self.typed_keys.items()]
+        for name, value in typed + [("azure", self.azure_key.get())]:
+            value = value.strip()
             if not value:
                 continue
             if not keys.set_key(name, "" if value == "-" else value):
@@ -713,11 +768,12 @@ class SettingsDialog:
         except (ValueError, self.app.tk.TclError):
             font_size = s.font_size
         return replace(s, target=self.target.get(), top=self.top.get(), dialect=dialect,
-                       translator=self.translator.get(), source=source, device=device,
+                       translator=self.kinds[self.translator.get()], source=source, device=device,
                        font_size=font_size, always_on_top=bool(self.on_top.get()),
                        model=self.model.get().strip() or s.model, compute=self.compute.get(),
                        recognizer=self.recognizers[self.recognizer.get()], speed=self.speed.get(),
-                       claude_model=self.claude_models[self.claude_model.get()],
+                       claude_model=self.models["claude"], openai_model=self.models["openai"],
+                       gemini_model=self.models["gemini"], grok_model=self.models["grok"],
                        azure_region=self.azure_region.get().strip() or "switzerlandnorth")
 
     def speed_check(self) -> None:

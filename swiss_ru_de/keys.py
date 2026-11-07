@@ -6,11 +6,13 @@ from __future__ import annotations
 import os
 
 SERVICE = "swiss-ru-de"
-ENV = {"anthropic": "ANTHROPIC_API_KEY", "deepl": "DEEPL_AUTH_KEY", "azure": "AZURE_SPEECH_KEY"}
+ENV = {"anthropic": "ANTHROPIC_API_KEY", "deepl": "DEEPL_AUTH_KEY", "azure": "AZURE_SPEECH_KEY",
+       "openai": "OPENAI_API_KEY", "gemini": "GEMINI_API_KEY", "grok": "XAI_API_KEY"}
+ALT_ENV = {"gemini": "GOOGLE_API_KEY"}
 
 
 def get_key(name: str) -> str | None:
-    value = os.environ.get(ENV[name])
+    value = os.environ.get(ENV[name]) or os.environ.get(ALT_ENV.get(name, ""), "")
     if value:
         return value
     if name == "anthropic" and os.environ.get("ANTHROPIC_AUTH_TOKEN"):

@@ -59,7 +59,7 @@ def test_translator_hub_caches_and_reconfigures(monkeypatch):
 
     made = []
 
-    def fake_make(kind, target, claude_model, offline_model, dialect, log):
+    def fake_make(kind, target, claude_model, offline_model, dialect, log, models=None):
         made.append((kind, dialect))
         return Passthrough()
 

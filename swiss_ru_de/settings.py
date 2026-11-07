@@ -28,6 +28,9 @@ class Settings:
     speed: str = "auto"  # auto | fast | precise - see tuning.py
     azure_region: str = "switzerlandnorth"
     claude_model: str = ""
+    openai_model: str = ""  # "" = provider default (translate.PROVIDERS)
+    gemini_model: str = ""
+    grok_model: str = ""
     offline_model: str = DEFAULT_OFFLINE_MODEL
     geometry: str = ""  # window size/position, remembered
 

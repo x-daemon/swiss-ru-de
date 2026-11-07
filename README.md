@@ -104,20 +104,32 @@ double-click or press Esc to close it.
 
 ## Translation to Russian
 
-| `--translator` | Quality | Needs | Notes |
+| Translator (*Settings → Translator*) | Quality | Key from | Default model (editable) |
 |---|---|---|---|
-| `claude` | best | Claude API key (Settings) | Uses the previous sentences as context, fixes obvious recognition errors, handles leftover dialect words (*öppis, gäll, lueg …*). Default model `claude-opus-5-5` at low effort. Use `--claude-model claude-haiku-5-5` for lower cost and latency. |
-| `deepl` | very good | `DEEPL_AUTH_KEY` | The [free API key](https://www.deepl.com/pro-api) covers 500 000 characters/month. |
-| `offline` | good | nothing | NLLB-200 600M runs locally. Nothing leaves your PC. |
+| **Claude** (Anthropic) | best | console.anthropic.com | `claude-opus-5-5`; `claude-haiku-5-5` is fastest and cheapest |
+| **ChatGPT** (OpenAI) | very good | platform.openai.com → API keys | `gpt-6-luna` (fast, cheap); `gpt-6-sol`, `gpt-6-astra` are stronger |
+| **Gemini** (Google) | very good | aistudio.google.com → Get API key | `gemini-3.8-flash`; `gemini-3.5-flash-lite` is cheapest |
+| **Grok** (xAI) | very good | console.x.ai → API keys | `grok-4.7` |
+| **DeepL** | good | deepl.com/pro-api (free key available) | – |
+| **offline** | basic | no key | NLLB-200, runs on your PC |
 
-The default is `auto`: it uses Claude if `ANTHROPIC_API_KEY` is set, DeepL if `DEEPL_AUTH_KEY`
-is set, and the offline model otherwise.
+The four AI models (Claude, ChatGPT, Gemini, Grok) do more than translate:
 
-```bash
-# Windows (PowerShell):  $env:ANTHROPIC_API_KEY="sk-ant-..."
-export ANTHROPIC_API_KEY=sk-ant-...
-swiss-ru-de --to both --dialect berner-oberland
-```
+* they also **correct recognition errors**, using the dialect line as a second hearing and the
+  earlier sentences as context (see *Translation quality*);
+* with the bottom part set to *Hochdeutsch*, they only correct the German.
+
+In *Settings*, pick the translator, paste its API key and choose the model. Keys are stored
+in the Windows Credential Manager, one per provider, so you can switch at any time. *auto*
+uses the first one with a key, in the order Claude, ChatGPT, Gemini, Grok, DeepL, offline.
+
+ChatGPT, Gemini and Grok all use the official `openai` Python SDK: the three providers offer
+the same OpenAI-compatible API. If a model rejects an option (`reasoning_effort` or JSON
+schema output), the app retries without it and remembers that.
+
+On the command line use `--translator claude|openai|gemini|grok|deepl|offline`, with
+`--translator-model <id>` to pick the model and the environment variables `ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY`, `GEMINI_API_KEY` (or `GOOGLE_API_KEY`), `XAI_API_KEY` or `DEEPL_AUTH_KEY`.
 
 ## Dialects and accuracy tips
 
@@ -193,18 +205,18 @@ are missing.
 
 ## Translation quality
 
-**With Claude, recognition errors are corrected too.** Claude can't listen to audio: the
-Claude API accepts text and images only, so speech recognition stays on your PC (Whisper on
-the GPU or CPU), or optionally Azure. For each sentence Claude gets:
+**With Claude, ChatGPT, Gemini or Grok, recognition errors are corrected too.** Speech
+recognition stays on your PC (Whisper on the GPU or CPU), or optionally Azure; the AI model
+gets text. For each sentence it gets:
 
 * the recognised Standard German;
 * the dialect line, as a second hearing of the same audio (it waits for it at most 1.5 s);
 * the previous sentences.
 
-It returns the **corrected German sentence and its translation** in one request (JSON
-output). Misheard words are fixed (*Gipfel* at breakfast → *Gipfeli*), and the corrected
+The model returns the **corrected German sentence and its translation** in one request
+(JSON output). Misheard words are fixed (*Gipfel* at breakfast → *Gipfeli*), and the corrected
 German is what the window, the transcript and the next sentence's context use. With the
-bottom part set to *Hochdeutsch*, Claude only corrects the German.
+bottom part set to *Hochdeutsch*, the model only corrects the German.
 
 
 The bottom header shows which translator is active (e.g. *перевод · offline, basic

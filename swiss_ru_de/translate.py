@@ -178,6 +178,36 @@ _SCHEMAS = {
     for target in ("ru", "de")
 }
 
+LLM_KINDS = ("claude", "openai", "gemini", "grok")  # these also correct recognition errors
+
+
+def build_prompt(german: str, dialect: str | None, context: Sequence[str]) -> str:
+    prompt = ""
+    if context:
+        prompt += "Earlier lines (context only):\n" + "\n".join(context) + "\n\n"
+    prompt += f"Recognised: {german}"
+    if dialect and dialect.strip() and dialect.strip() != german.strip():
+        prompt += f"\nAs heard: {dialect}"
+    return prompt
+
+
+def parse_answer(text: str, target: str) -> tuple[str | None, str | None]:
+    """{"german": ..., "russian": ...} -> (corrected German, translation)."""
+    empty = (None, "" if target == "ru" else None)
+    try:
+        data = json.loads(text)
+    except ValueError:
+        match = re.search(r"\{.*\}", text or "", re.DOTALL)  # JSON inside extra text
+        try:
+            data = json.loads(match.group(0)) if match else None
+        except ValueError:
+            data = None
+    if not isinstance(data, dict):
+        return empty
+    fixed = str(data.get("german") or "").strip() or None
+    return fixed, (str(data.get("russian") or "").strip() if target == "ru" else None)
+
+
 # Models that accept output_config.effort / server-side refusal fallbacks.
 _EFFORT_MODELS = re.compile(r"^claude-(opus|sonnet|haiku|fable|mythos)-5|^claude-(opus-4-[678]|sonnet-4-6)")
 _FALLBACK_MODELS = {"claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5"}
@@ -211,12 +241,7 @@ class ClaudeTranslator(Translator):
             self.system += f"\n\nThe speaker most likely speaks {DIALECTS[dialect]}."
 
     def _request(self, german: str, dialect: str | None, context: Sequence[str], target: str) -> dict:
-        prompt = ""
-        if context:
-            prompt += "Earlier lines (context only):\n" + "\n".join(context) + "\n\n"
-        prompt += f"Recognised: {german}"
-        if dialect and dialect.strip() and dialect.strip() != german.strip():
-            prompt += f"\nAs heard: {dialect}"
+        prompt = build_prompt(german, dialect, context)
         output_config: dict = {"format": {"type": "json_schema", "schema": _SCHEMAS[target]}}
         if _EFFORT_MODELS.match(self.model):
             output_config["effort"] = self.effort  # low = fastest
@@ -253,13 +278,102 @@ class ClaudeTranslator(Translator):
             raise TranslationError("Cannot reach the Claude API (network)") from e
         if resp.stop_reason in ("refusal", "max_tokens"):
             return None, ("" if target == "ru" else None)
-        text = next((b.text for b in resp.content if b.type == "text"), "")
+        return parse_answer(next((b.text for b in resp.content if b.type == "text"), ""), target)
+
+    def translate(self, text: str, context: Sequence[str] = ()) -> str:
+        return self.process(text, None, context, "ru")[1] or ""
+
+
+# ------------------------------------------------- ChatGPT / Gemini / Grok
+# All three offer an OpenAI-compatible Chat Completions API, so one client (the official
+# openai SDK) serves them; only the address, key and model differ.
+PROVIDERS = {
+    "openai": dict(label="ChatGPT (OpenAI)", short="ChatGPT", base_url=None,
+                   models=["gpt-6-luna", "gpt-6-sol", "gpt-6-astra"], reasoning_effort="low",
+                   where="platform.openai.com → API keys"),
+    "gemini": dict(label="Gemini (Google)", short="Gemini",
+                   base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+                   models=["gemini-3.8-flash", "gemini-3.5-flash-lite"], reasoning_effort=None,
+                   where="aistudio.google.com → Get API key"),
+    "grok": dict(label="Grok (xAI)", short="Grok", base_url="https://api.x.ai/v1",
+                 models=["grok-4.7"], reasoning_effort=None, where="console.x.ai → API keys"),
+}
+
+
+class OpenAICompatibleTranslator(Translator):
+    """ChatGPT, Gemini or Grok: corrects the recognised German and translates it, like
+    ClaudeTranslator, with the same instructions and JSON answer."""
+
+    corrects = True
+
+    def __init__(self, provider: str, model: str | None = None, dialect: str | None = None,
+                 api_key: str | None = None):
         try:
-            data = json.loads(text)
-        except ValueError:
+            import openai
+        except ImportError as e:
+            raise TranslationError('ChatGPT/Gemini/Grok need: pip install "swiss-ru-de[llm]"') from e
+        self._openai = openai
+        info = PROVIDERS[provider]
+        self.provider = provider
+        self.model = model or info["models"][0]
+        self.name = f"{info['short']} ({self.model})"
+        key = api_key or keys.get_key(provider)
+        if not key:
+            raise TranslationError(f"Add your {info['short']} API key in Settings ({info['where']})")
+        self.client = openai.OpenAI(api_key=key, base_url=info["base_url"], timeout=30.0, max_retries=2)
+        self.system = CLAUDE_SYSTEM + "\n\nReply with the JSON object only."
+        if DIALECTS.get(dialect or "auto"):
+            self.system += f"\n\nThe speaker most likely speaks {DIALECTS[dialect]}."
+        # Optional request features; dropped automatically if a model rejects them.
+        self.options: dict = {}
+        if info["reasoning_effort"]:
+            self.options["reasoning_effort"] = info["reasoning_effort"]  # faster answers
+
+    def _request(self, german: str, dialect: str | None, context: Sequence[str], target: str) -> dict:
+        schema = {"type": "json_schema",
+                  "json_schema": {"name": "subtitle", "schema": _SCHEMAS[target], "strict": True}}
+        return dict(
+            model=self.model,
+            messages=[{"role": "system", "content": self.system},
+                      {"role": "user", "content": build_prompt(german, dialect, context)}],
+            response_format=self.options.get("response_format", schema),
+            max_completion_tokens=4096,
+            **{k: v for k, v in self.options.items() if k != "response_format"},
+        )
+
+    def process(self, german: str, dialect: str | None = None, context: Sequence[str] = (),
+                target: str = "ru") -> tuple[str | None, str | None]:
+        o = self._openai
+        target = "de" if target == "de" else "ru"
+        for _ in range(3):  # retries only to drop options a model does not support
+            try:
+                resp = self.client.chat.completions.create(**self._request(german, dialect, context, target))
+                break
+            except o.BadRequestError as e:
+                message = str(e).lower()
+                if "reasoning" in message and "reasoning_effort" in self.options:
+                    del self.options["reasoning_effort"]
+                elif ("response_format" in message or "json_schema" in message) and \
+                        "response_format" not in self.options:
+                    self.options["response_format"] = {"type": "json_object"}
+                else:
+                    raise TranslationError(f"{self.name}: {e}") from e
+            except o.AuthenticationError as e:
+                raise TranslationError(f"{PROVIDERS[self.provider]['short']} API key is invalid (check Settings)") from e
+            except o.NotFoundError as e:
+                raise TranslationError(f"Unknown model '{self.model}' (check Settings)") from e
+            except o.RateLimitError as e:
+                raise TranslationError(f"{self.name}: rate limit or quota reached") from e
+            except o.APIStatusError as e:
+                raise TranslationError(f"{self.name} error {e.status_code}") from e
+            except o.APIConnectionError as e:
+                raise TranslationError(f"Cannot reach {PROVIDERS[self.provider]['short']} (network)") from e
+        else:
+            raise TranslationError(f"{self.name}: request rejected")
+        choice = resp.choices[0] if resp.choices else None
+        if choice is None or getattr(choice.message, "refusal", None):
             return None, ("" if target == "ru" else None)
-        fixed = (data.get("german") or "").strip() or None
-        return fixed, ((data.get("russian") or "").strip() if target == "ru" else None)
+        return parse_answer(choice.message.content or "", target)
 
     def translate(self, text: str, context: Sequence[str] = ()) -> str:
         return self.process(text, None, context, "ru")[1] or ""
@@ -393,12 +507,17 @@ def resolve_kind(kind: str) -> str:
         return kind
     if keys.has_key("anthropic"):
         return "claude"
+    for provider in PROVIDERS:
+        if keys.has_key(provider):
+            return provider
     if keys.has_key("deepl"):
         return "deepl"
     return "offline"
 
 
-QUALITY_LABEL = {"claude": "Claude, corrected", "deepl": "DeepL", "offline": "offline, basic quality"}
+QUALITY_LABEL = {"claude": "Claude, corrected", "openai": "ChatGPT, corrected",
+                 "gemini": "Gemini, corrected", "grok": "Grok, corrected", "deepl": "DeepL",
+                 "offline": "offline, basic quality"}
 
 
 def make_translator(
@@ -408,12 +527,15 @@ def make_translator(
     offline_model: str | None = None,
     dialect: str | None = None,
     log=print,
+    models: dict | None = None,
 ) -> Translator:
     if target == "de":
         return Passthrough()
     kind = resolve_kind(kind)
     if kind == "claude":
         return ClaudeTranslator(model=claude_model, dialect=dialect)
+    if kind in PROVIDERS:
+        return OpenAICompatibleTranslator(kind, model=(models or {}).get(kind), dialect=dialect)
     if kind == "deepl":
         return DeepLTranslator()
     if kind == "offline":
@@ -427,9 +549,13 @@ class TranslatorHub:
     thread, so slow model loading never blocks the window."""
 
     def __init__(self, kind: str = "auto", claude_model: str | None = None,
-                 offline_model: str | None = None, dialect: str | None = None, log=print):
+                 offline_model: str | None = None, dialect: str | None = None, log=print,
+                 openai_model: str | None = None, gemini_model: str | None = None,
+                 grok_model: str | None = None):
         self.config = dict(kind=kind, claude_model=claude_model or None,
-                           offline_model=offline_model, dialect=dialect)
+                           offline_model=offline_model, dialect=dialect,
+                           openai_model=openai_model or None, gemini_model=gemini_model or None,
+                           grok_model=grok_model or None)
         self.log = log
         self._cache: dict[tuple, Translator] = {}
         self._lock = threading.Lock()
@@ -444,13 +570,15 @@ class TranslatorHub:
             self._cache.clear()
 
     def get(self, target: str) -> Translator:
-        if target == "de" and resolve_kind(self.config["kind"]) != "claude":
-            return Passthrough()  # only Claude can improve German output
+        if target == "de" and resolve_kind(self.config["kind"]) not in LLM_KINDS:
+            return Passthrough()  # only the AI models can improve German output
         target = "ru"  # one translator object serves both targets
         with self._lock:
             key = tuple(sorted(self.config.items()))
             if key not in self._cache:
                 c = self.config
+                models = {p: c.get(f"{p}_model") for p in PROVIDERS}
                 self._cache[key] = make_translator(c["kind"], target, c["claude_model"],
-                                                   c["offline_model"], c["dialect"], log=self.log)
+                                                   c["offline_model"], c["dialect"], log=self.log,
+                                                   models=models)
             return self._cache[key]
