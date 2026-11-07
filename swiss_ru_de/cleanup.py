@@ -377,7 +377,7 @@ def model_items(s: Settings, cache: Path | None = None) -> list[Item]:
     used = speech_models_in_use(s)
     items = []
     if cache.is_dir():
-        for d in sorted(cache.glob("models--*")):
+        for d in sorted(cache.glob("models--*"), key=lambda p: p.name.lower()):
             repo = d.name[len("models--"):].replace("--", "/", 1)
             if repo in ours and repo not in used:
                 items.append(Item("Speech and translation models not used any more",
@@ -385,7 +385,7 @@ def model_items(s: Settings, cache: Path | None = None) -> list[Item]:
     converted = config_dir() / "models"
     keep = re.sub(r"[^\w.-]", "_", s.offline_model) + "-ct2-int8"
     if converted.is_dir():
-        for d in sorted(converted.iterdir()):
+        for d in sorted(converted.iterdir(), key=lambda p: p.name.lower()):
             if d.is_dir() and d.name != keep:
                 items.append(Item("Speech and translation models not used any more",
                                   f"converted model {d.name}", folder_size(d), lambda d=d: remove_tree(d)))

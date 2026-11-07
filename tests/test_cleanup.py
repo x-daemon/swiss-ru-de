@@ -93,13 +93,13 @@ def test_unused_speech_models(tmp_path, monkeypatch):
     (converted / "Helsinki-NLP_opus-mt-de-ru-ct2-int8").mkdir(parents=True)
     items = cleanup.model_items(Settings(), cache)
     labels = [i.label for i in items]
-    assert [l.split()[0] for l in labels] == ["Systran/faster-whisper-medium",
-                                              "gcoli/whisper-large-v3-swiss-german-mit",
+    assert [l.split()[0] for l in labels] == ["gcoli/whisper-large-v3-swiss-german-mit",
+                                              "Systran/faster-whisper-medium",
                                               "converted"]
     assert "Helsinki-NLP_opus-mt-de-ru" in labels[2]
     for i in items:
         assert i.remove()
-    left = sorted(p.name for p in cache.iterdir())
+    left = sorted((p.name for p in cache.iterdir()), key=str.lower)
     assert left == ["models--facebook--nllb-200-distilled-600M",
                     "models--jayr23--whisper-large-v3-turbo-swiss-german-ct2",
                     "models--mobiuslabsgmbh--faster-whisper-large-v3-turbo",
