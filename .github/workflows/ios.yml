@@ -17,7 +17,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Select the newest Xcode
         run: |
@@ -79,7 +79,7 @@ jobs:
           echo "--- sizes"; du -sh "$APP" "$APP/SwissRuDe" "$APP/PlugIns/SwissRuDeBroadcast.appex"
           echo "--- linked WhisperKit"; nm -gU "$APP/SwissRuDe" 2>/dev/null | grep -c WhisperKit || true
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: SwissRuDe-ipa
           path: ios/SwissRuDe-unsigned.ipa

@@ -20,11 +20,11 @@ jobs:
     env:
       SWISS_SETUP_CI: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # The runner's default Python is the newest release (no onnxruntime wheels yet);
       # the installer must pick a supported one - provide 3.12 like on a typical PC.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
