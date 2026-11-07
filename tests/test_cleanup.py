@@ -174,3 +174,13 @@ def test_collect_finds_everything_and_keeps_this_installation(tmp_path, monkeypa
     items = cleanup.collect(current, roots=[(tmp_path, 4)], settings=Settings(), log=lambda m: None)
     cleanup.run(items, ask=lambda q, d: d, log=lambda m: None)
     assert not old.exists() and current.exists() and (current / ".venv").exists()
+
+
+def test_empty_extract_folder_around_an_old_copy_goes_too(tmp_path):
+    old = make_copy(tmp_path / "swiss-ru-de-install-pack" / "swiss-ru-de")
+    assert cleanup.remove_copy(old) and not (tmp_path / "swiss-ru-de-install-pack").exists()
+    kept = make_copy(tmp_path / "Projects" / "swiss-ru-de")  # not a wrapper of ours
+    assert cleanup.remove_copy(kept) and (tmp_path / "Projects").exists()
+    busy = make_copy(tmp_path / "swiss-ru-de-x" / "swiss-ru-de")
+    (tmp_path / "swiss-ru-de-x" / "notes.txt").write_text("mine")
+    assert cleanup.remove_copy(busy) and (tmp_path / "swiss-ru-de-x" / "notes.txt").exists()

@@ -260,8 +260,23 @@ def copy_items(copies: list[Path], current: Path = APP_ROOT) -> list[Item]:
                     + ", ".join(extra[:3]))
         items.append(Item("Old copies of swiss-ru-de", f"Folder {where}",
                           max(0, folder_size(c) - venv_size),  # .venv: counted above
-                          lambda c=c: remove_tree(c), default=not (newer or extra), note=note))
+                          lambda c=c: remove_copy(c), default=not (newer or extra), note=note))
     return items
+
+
+def remove_copy(copy: Path) -> bool:
+    """Delete an old copy, and the folder "Extract all" put around it if that is now empty
+    (swiss-ru-de-install-pack\\swiss-ru-de -> swiss-ru-de-install-pack)."""
+    if not remove_tree(copy):
+        return False
+    wrapper = copy.parent
+    name = wrapper.name.lower()
+    if ("swiss-ru-de" in name or "swiss_ru_de" in name) and wrapper != Path.home():
+        try:
+            wrapper.rmdir()  # only if empty
+        except OSError:
+            pass
+    return True
 
 
 def process_items(copies: list[Path]) -> list[Item]:
