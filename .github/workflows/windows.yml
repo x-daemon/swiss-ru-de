@@ -55,3 +55,45 @@ jobs:
         run: |
           .venv\Scripts\python.exe -m pip install --quiet pytest
           .venv\Scripts\python.exe -m pytest -q -p no:cacheprovider
+
+      - name: Remove old installations (cleanup-old-installs.bat)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $here = (Get-Location).Path
+          $dl = Join-Path $HOME "Downloads"
+          # two old copies: one plain, one with a file of the user's (folder must stay)
+          foreach ($name in "swiss-ru-de-main", "swiss-ru-de-notes") {
+            $old = Join-Path $dl "$name\swiss-ru-de"
+            New-Item -ItemType Directory -Force "$old\swiss_ru_de", "$old\.venv\Scripts" | Out-Null
+            Copy-Item pyproject.toml, start-windows.bat $old
+            Set-Content "$old\swiss_ru_de\__init__.py" '__version__ = "1.0.0"'
+            Set-Content "$old\.venv\Scripts\python.exe" "fake"
+          }
+          Set-Content "$dl\swiss-ru-de-notes\swiss-ru-de\transcript.txt" "mine"
+          $s = New-Object -ComObject WScript.Shell
+          $desk = [Environment]::GetFolderPath("Desktop")
+          $l = $s.CreateShortcut("$desk\old swiss.lnk")
+          $l.TargetPath = "$dl\swiss-ru-de-main\swiss-ru-de\start-windows.bat"; $l.Save()
+          $l = $s.CreateShortcut("$desk\Swiss RU-DE.lnk")  # our shortcut, but to the old copy
+          $l.TargetPath = "$dl\swiss-ru-de-main\swiss-ru-de\start-windows.bat"; $l.Save()
+          $hub = Join-Path $HOME ".cache\huggingface\hub"
+          foreach ($m in "models--Systran--faster-whisper-medium", "models--jayr23--whisper-large-v3-turbo-swiss-german-ct2") {
+            New-Item -ItemType Directory -Force "$hub\$m\blobs" | Out-Null
+            Set-Content "$hub\$m\blobs\x" "model"
+          }
+
+          cmd /c "cleanup-old-installs.bat --yes"
+          if ($LASTEXITCODE -ne 0) { throw "cleanup failed" }
+
+          if (Test-Path "$dl\swiss-ru-de-main") { throw "old copy not removed" }
+          if (-not (Test-Path "$dl\swiss-ru-de-notes\swiss-ru-de\transcript.txt")) { throw "user file removed" }
+          if (Test-Path "$dl\swiss-ru-de-notes\swiss-ru-de\.venv") { throw "old .venv not removed" }
+          if (Test-Path "$desk\old swiss.lnk") { throw "old shortcut not removed" }
+          $target = $s.CreateShortcut("$desk\Swiss RU-DE.lnk").TargetPath
+          if (-not $target.StartsWith($here)) { throw "shortcut not pointing here: $target" }
+          if (Test-Path "$hub\models--Systran--faster-whisper-medium") { throw "unused model not removed" }
+          if (-not (Test-Path "$hub\models--jayr23--whisper-large-v3-turbo-swiss-german-ct2")) { throw "model in use removed" }
+          if (-not (Test-Path ".venv\Scripts\python.exe")) { throw "this installation was damaged" }
+          .venv\Scripts\swiss-ru-de.exe --version
+          Write-Host "Cleanup OK"

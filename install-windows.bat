@@ -84,6 +84,7 @@ echo.
 echo [6/6] Done! Start swiss-ru-de any time with the "Swiss RU-DE" icon on the desktop.
 echo       Settings - Translator: Claude / ChatGPT / Gemini / Grok need an API key;
 echo       "Local AI on this PC" and "offline" work without one.
+echo       Older copies of swiss-ru-de on this PC? cleanup-old-installs.bat removes them.
 echo.
 if defined SWISS_SETUP_CI exit /b 0
 start "" ".venv\Scripts\swiss-ru-de-gui.exe"

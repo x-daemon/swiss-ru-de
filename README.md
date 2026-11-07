@@ -61,6 +61,23 @@ version). `install-local-ai.bat` installs only Ollama and the model; *Settings �
 Ollama + model…* runs it too. `uninstall-windows.bat` removes shortcuts, the Python
 environment and, if you choose, the models and settings.
 
+**Removing old installations.** Every older archive you unpacked has its own Python
+environment (1–4 GB). After installing the new version, double-click
+**`cleanup-old-installs.bat`** in the new folder. It looks on the Desktop, in Downloads,
+Documents, OneDrive and the top folders of every drive. It finds, and asks about each one
+before deleting:
+
+* old copies of swiss-ru-de and their `.venv`. A folder that holds files of your own (e.g. a
+  saved transcript), or a newer version, is kept unless you say otherwise;
+* shortcuts that point to old copies (the *Swiss RU-DE* shortcuts are then pointed to the new
+  folder);
+* swiss-ru-de installed into a system Python by an older manual install;
+* speech models and Ollama models that the current settings no longer use (e.g. `gemma3:12b`
+  once you use `gemma3:4b`), the pip download cache and the Ollama installer.
+
+The folder you start it from is never touched, even if you unpacked it inside the old one.
+`cleanup-old-installs.bat --list` only shows what it would remove.
+
 `start-windows.bat` remains as a launcher that also shows a console window, which is useful
 when something goes wrong.
 
@@ -357,6 +374,12 @@ dialect is welcome.
 *Settings → Check this PC…* показывает процессор, видеокарту и замеренную скорость, а также
 что ускорит работу именно на этом компьютере. Самое большое ускорение (примерно в 10 раз)
 даёт видеокарта NVIDIA.
+
+**Старые установки** (каждый распакованный архив занимает 1–4 ГБ): после установки новой
+версии дважды щёлкните **`cleanup-old-installs.bat`** в новой папке. Он находит старые копии,
+ярлыки на них, неиспользуемые модели (например, `gemma3:12b`) и кэши загрузок и про каждую
+спрашивает, удалить ли её. Текущая папка не затрагивается. Папки с вашими файлами
+(например, сохранёнными расшифровками) по умолчанию остаются.
 
 **Локальный ИИ (Ollama) отстаёт на минуты?** Почти всегда причина в видеопамяти: модель
 должна поместиться в видеокарту *рядом* с двумя моделями распознавания (около 2,5 ГБ).
