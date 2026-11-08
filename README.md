@@ -49,7 +49,7 @@ GitHub Actions.
    2. swiss-ru-de with all translators, plus the CUDA libraries if an NVIDIA graphics card
       is found;
    3. **Local AI**: Ollama and a translation model that fits the graphics card next to the
-      speech models (`gemma3:12b` with 16 GB or more, otherwise `gemma3:4b`). Settings are
+      speech models (`translategemma:12b` with 16 GB or more, otherwise `translategemma:4b`). Settings are
       switched to it;
    4. the speech models, so the first start is fast;
    5. **"Swiss RU-DE"** shortcuts on the desktop and in the Start menu;
@@ -91,7 +91,7 @@ swiss-ru-de --gui
 ```
 
 For local AI on Linux/macOS, install Ollama from [ollama.com](https://ollama.com) and run
-`ollama pull gemma3:4b`.
+`ollama pull translategemma:4b`.
 
 ## The window
 
@@ -151,7 +151,7 @@ double-click or press Esc to close it.
 | **ChatGPT** (OpenAI) | very good | platform.openai.com → API keys | `gpt-6-luna` (fast, cheap); `gpt-6-sol`, `gpt-6-astra` are stronger |
 | **Gemini** (Google) | very good | aistudio.google.com → Get API key | `gemini-3.8-flash`; `gemini-3.5-flash-lite` is cheapest |
 | **Grok** (xAI) | very good | console.x.ai → API keys | `grok-4.7` |
-| **Local AI** (Ollama / LM Studio) | good to very good, **stays on your PC** | no key | `gemma3:4b` (fast, up to 12 GB graphics memory); `gemma3:12b` (16 GB+); `translategemma:12b` translates only |
+| **Local AI** (Ollama / LM Studio) | good to very good, **stays on your PC** | no key | `translategemma:4b` (Google's translation model, up to 12 GB graphics memory); `translategemma:12b` (16 GB+); `gemma3:4b` also corrects the German |
 | **DeepL** | good | deepl.com/pro-api (free key available) | – |
 | **offline** | basic | no key | NLLB-200, runs on your PC |
 
@@ -181,11 +181,11 @@ It corrects the recognised German and translates with context, and nothing leave
 1. Install **[Ollama](https://ollama.com)** (Windows installer). It runs in the background.
 2. In a terminal, download the model (once, about 3 GB):
    ```bash
-   ollama pull gemma3:4b
+   ollama pull translategemma:4b
    ```
 3. In *Settings → Translator*, choose **Local AI on this PC**. The model list shows the models
    Ollama has installed; pick one and save. With no model chosen, the app uses the first
-   installed of `gemma3:4b`, `gemma3:12b`, `qwen3:14b`.
+   installed of `translategemma:4b`, `translategemma:12b`, `gemma3:4b`, `gemma3:12b`.
 
 Notes:
 
@@ -221,6 +221,11 @@ Notes:
 * **First sentence:** the model is loaded when the app starts, so the first sentence is fast.
 * **LM Studio** works too: start its local server and set *Server* to
   `http://localhost:1234/v1`.
+* **TranslateGemma** (Google's translation model built on Gemma 3) is the default since 1.1.5.
+  Google reports that the 4B version translates about as well as the general 12B Gemma, and
+  4B fits next to the speech models. `gemma3:4b` mistranslated and invented words ("с
+  ишахой"). TranslateGemma gets its own prompt format and only the recognised German (Swiss
+  words normalised). Local models now answer with temperature 0, the most likely translation.
 * **Translation-only models** such as `translategemma:12b` get a plain translation prompt. They
   don't correct recognition errors.
 
@@ -381,7 +386,7 @@ dialect is welcome.
 
 1. Распакуйте архив и дважды щёлкните **`install-windows.bat`**. Он сам установит:
    Python (если его нет), программу, поддержку видеокарты NVIDIA, локальный ИИ (Ollama +
-   модель перевода по объёму видеопамяти: до 12 ГБ `gemma3:4b`, от 16 ГБ `gemma3:12b`), модели распознавания и ярлык **Swiss RU-DE** на
+   модель перевода по объёму видеопамяти: до 12 ГБ `translategemma:4b`, от 16 ГБ `translategemma:12b`), модели распознавания и ярлык **Swiss RU-DE** на
    рабочем столе. Это займёт 10–30 минут, скачивается до 12 ГБ.
 2. Дальше запускайте программу ярлыком **Swiss RU-DE**.
 3. Откроется окно из двух частей. Сверху: швейцарский немецкий, как его произнесли (на диалекте).
@@ -408,8 +413,8 @@ dialect is welcome.
 **Локальный ИИ (Ollama) отстаёт на минуты?** Почти всегда причина в видеопамяти: модель
 должна поместиться в видеокарту *рядом* с двумя моделями распознавания (около 2,5 ГБ).
 На карте 12 ГБ (например, RTX 3060) `gemma3:12b` не помещается, Ollama считает часть на
-процессоре, и перевод сильно запаздывает. Возьмите **`gemma3:4b`** (*Settings → Model*);
-`gemma3:12b` имеет смысл с 16 ГБ видеопамяти. Программа сама проверяет это при запуске и
+процессоре, и перевод сильно запаздывает. Возьмите **`translategemma:4b`** (переводческая
+модель Google, *Settings → Model*); `translategemma:12b` имеет смысл с 16 ГБ видеопамяти. Программа сама проверяет это при запуске и
 пишет в строке состояния. Если сверху показан диалект, ИИ пишет только русский перевод:
 ответ вдвое короче и вдвое быстрее. *Settings → Check this PC…* показывает, сколько секунд
 занимает каждый шаг.

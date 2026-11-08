@@ -362,9 +362,11 @@ PROVIDERS = {
     # Runs on this PC (GPU): Ollama or LM Studio serve an OpenAI-compatible API, no key.
     "local": dict(label="Local AI (Ollama / LM Studio)", short="Local AI",
                   base_url="http://localhost:11434/v1",
-                  models=["gemma3:4b", "gemma3:12b", "qwen3:8b", "qwen3:14b", "translategemma:4b",
-                          "translategemma:12b"],
-                  reasoning_effort=None, where="ollama.com, then: ollama pull gemma3:4b"),
+                  # TranslateGemma: Google's translation model - much better translations than
+                  # a general model of the same size (but it does not correct the German)
+                  models=["translategemma:4b", "translategemma:12b", "gemma3:4b", "gemma3:12b",
+                          "qwen3:8b", "qwen3:14b"],
+                  reasoning_effort=None, where="ollama.com, then: ollama pull translategemma:4b"),
 }
 LOCAL_SERVERS = {"Ollama": "http://localhost:11434/v1", "LM Studio": "http://localhost:1234/v1"}
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL)
@@ -462,6 +464,7 @@ _LABEL = re.compile(r"^\s*\**\s*(?:перевод|translation|russian|русск
                     re.IGNORECASE)
 _LOOP = re.compile(r"(\S.{0,11}?)(?:\s*\1){5,}", re.DOTALL)
 _CYRILLIC = re.compile(r"[\u0400-\u04ff]")
+_NUMBER = re.compile(r"^\s*\d{1,2}\s*[.)]\s+")
 
 
 def clean_translation(text: str | None, source: str = "") -> str:
@@ -472,6 +475,8 @@ def clean_translation(text: str | None, source: str = "") -> str:
     if _CYRILLIC.search(text):
         text = _LATIN_NOTE.sub("", text)
     text = _LABEL.sub("", text.strip())
+    if not re.match(r"\s*\d", source or ""):
+        text = _NUMBER.sub("", text)  # "1. Что это?" - numbering copied from the instructions
     # a repeated word once; repeated junk without letters ("0} 0} 0}") not at all
     text = _LOOP.sub(lambda m: m.group(1) if re.search(r"[^\W\d_]", m.group(1)) else "", text)
     text = " ".join(text.split()).strip("\"'\u201c\u201d\u00ab\u00bb{} ")
@@ -537,7 +542,7 @@ class OpenAICompatibleTranslator(Translator):
             # randomness (Gemma's default is 1.0), and keep the model loaded in the graphics
             # card between sentences (Ollama unloads it after 5 idle minutes by default).
             self.options["reasoning_effort"] = "none"
-            self.options["temperature"] = 0.2
+            self.options["temperature"] = 0.0  # the most likely translation, no invented words
             if ":11434" in self.base_url:
                 self.options["extra_body"] = {"keep_alive": "30m"}
 

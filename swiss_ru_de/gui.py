@@ -751,10 +751,9 @@ class SettingsDialog:
         "openai": "gpt-6-luna = fast and cheap, gpt-6-sol / gpt-6-astra = stronger.",
         "gemini": "gemini-3.8-flash = fast, gemini-3.5-flash-lite = cheapest.",
         "grok": "grok-4.7",
-        "local": "gemma3:4b = fast, fits next to the speech models on any 8-12 GB graphics "
-                 "card. gemma3:12b = more precise, needs 16 GB (on 12 GB it spills to the "
-                 "processor and gets minutes behind). qwen3:8b = bigger, still fits 12 GB. "
-                 "translategemma:4b = translation only. Install: ollama pull gemma3:4b",
+        "local": "translategemma:4b = Google's translation model, best for 8-12 GB cards "
+                 "(Russian only; to correct the German too use gemma3:4b). translategemma:12b "
+                 "from 16 GB. Install: ollama pull translategemma:4b",
     }
 
     def _show_translator(self) -> None:
