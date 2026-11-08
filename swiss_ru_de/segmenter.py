@@ -20,6 +20,7 @@ class Segment:
     start: float  # seconds since the stream started
     end: float
     audio: np.ndarray  # float32 mono, SAMPLE_RATE
+    heard_at: float | None = None  # time.monotonic() when the segment was complete (live)
 
     @property
     def duration(self) -> float:

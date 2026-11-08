@@ -127,7 +127,12 @@ class SoundcardSource:
         sc = _import_soundcard()
         warnings.filterwarnings("ignore", message="data discontinuity")
         mic = self._open(sc)
-        with mic.recorder(samplerate=SAMPLE_RATE) as rec:
+        # Windows: soundcard asks WASAPI for a buffer of one device period (~10 ms) unless
+        # told otherwise. Whenever this thread is a little late (the speech model, the window
+        # and the translation all run in this process), audio was lost - words missing and
+        # the stream clock falling behind. Half a second of buffer avoids that.
+        extra = {"blocksize": SAMPLE_RATE // 2} if sys.platform == "win32" else {}
+        with mic.recorder(samplerate=SAMPLE_RATE, **extra) as rec:
             if on_open:
                 on_open(self.name)
             while not stop.is_set():

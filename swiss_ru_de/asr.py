@@ -193,7 +193,47 @@ def _fix_mel_bins(model) -> None:
         model.feature_extractor = FeatureExtractor(**model.feat_kwargs)
 
 
+def utterance_clips(audio: np.ndarray, sr: int = SAMPLE_RATE, min_pause_s: float = 0.35,
+                    min_clip_s: float = 0.8, max_clips: int = 8) -> list[tuple[int, int]]:
+    """Sample ranges of the utterances in a segment, split at clear pauses.
+
+    A segment often holds a short answer and the next question ("Orangensaft. - Und am
+    Wochenende ...?"). Given both at once, the Swiss German model tends to skip the first,
+    short one; each utterance on its own is recognised completely."""
+    frame = int(0.03 * sr)
+    n = len(audio) // frame
+    if n * frame < 2 * min_clip_s * sr:
+        return [(0, len(audio))]
+    frames = audio[: n * frame].reshape(n, frame).astype(np.float64)
+    db = 20 * np.log10(np.sqrt(np.mean(frames * frames, axis=1)) + 1e-10)
+    quiet = db < max(np.percentile(db, 80) - 15.0, np.percentile(db, 10) + 3.0)
+    run = int(min_pause_s / 0.03)
+    cuts, i = [], 0
+    while i < n:
+        j = i
+        while j < n and quiet[j]:
+            j += 1
+        if j - i >= run and i > 0 and j < n:  # a pause between two utterances
+            cuts.append((i + j) // 2 * frame)
+        i = max(j, i + 1)
+    bounds = [0, *cuts, len(audio)]
+    clips: list[tuple[int, int]] = []
+    shortest = int(min_clip_s * sr)
+    for a, b in zip(bounds, bounds[1:]):
+        if clips and (b - a < shortest or clips[-1][1] - clips[-1][0] < shortest):
+            clips[-1] = (clips[-1][0], b)  # too short on its own ("Ja."): join a neighbour
+        else:
+            clips.append((a, b))
+    while len(clips) > max_clips:  # join the shortest neighbouring pair
+        k = min(range(len(clips) - 1), key=lambda k: clips[k + 1][1] - clips[k][0])
+        clips[k:k + 2] = [(clips[k][0], clips[k + 1][1])]
+    return clips
+
+
 class Transcriber:
+    split_utterances = False  # see __init__
+    _batched = None
+
     def __init__(
         self,
         model: str,
@@ -247,6 +287,11 @@ class Transcriber:
             self.model = load("cpu", "int8")
         # Wider search (beam) is more precise; cheap on a GPU, too slow live on a CPU.
         self.beam_size = beam_size or (5 if self.device == "cuda" else 1)
+        # Live segments are recognised utterance by utterance, all in one batched pass - on
+        # a GPU that costs about as much as one pass; on a CPU every utterance would cost a
+        # full pass, so there the segment is recognised as a whole.
+        self.split_utterances = self.device == "cuda"
+        self._batched = None
         log(f"Speech model ready on {self.device.upper()} ({self.pass_seconds:.1f} s per pass).")
 
     def _options(self, beam_size: int, live: bool = False) -> dict:
@@ -271,14 +316,36 @@ class Transcriber:
 
     def transcribe(self, audio: np.ndarray) -> str:
         """Transcribe one short utterance (live mode)."""
-        segments, _ = self.model.transcribe(
-            audio, without_timestamps=True, **self._options(self.beam_size, live=True)
-        )
+        clips = utterance_clips(audio) if self.split_utterances else []
+        segments = None
+        if len(clips) > 1:
+            try:
+                segments = self._transcribe_clips(audio, clips)
+            except Exception as e:  # e.g. an older faster-whisper: whole segments from now on
+                self.split_utterances = False
+                self.log(f"Utterance-by-utterance recognition not available ({e!r}).")
+        if segments is None:
+            segments, _ = self.model.transcribe(
+                audio, without_timestamps=True, **self._options(self.beam_size, live=True)
+            )
         parts = [clean_text(s.text) for s in segments if s.no_speech_prob < 0.8]
         text = clean_text(" ".join(p for p in parts if not is_hallucination(p)))
         if is_hallucination(text) or (self.prompt and _echoes_prompt(text, self.prompt)):
             return ""
         return text
+
+    def _transcribe_clips(self, audio: np.ndarray, clips: list[tuple[int, int]]) -> list:
+        if self._batched is None:
+            from faster_whisper import BatchedInferencePipeline
+
+            self._batched = BatchedInferencePipeline(model=self.model)
+        options = self._options(self.beam_size, live=True)
+        for key in ("vad_filter", "vad_parameters"):  # the clips are the speech regions
+            options.pop(key)
+        segments, _ = self._batched.transcribe(
+            audio, clip_timestamps=[{"start": a / SAMPLE_RATE, "end": b / SAMPLE_RATE} for a, b in clips],
+            batch_size=len(clips), vad_filter=False, without_timestamps=True, **options)
+        return list(segments)
 
     def transcribe_file(self, path: str, beam_size: int = 5) -> Iterator[TextSegment]:
         """Transcribe a whole audio/video file, yielding sentences as they are ready."""

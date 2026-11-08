@@ -258,6 +258,17 @@ several sentences at once it dropped most of them. It also reads *zum Morgen* as
 | **This PC + NVIDIA GPU** | about 1 s per sentence | Free and private. `start-windows.bat` installs the CUDA libraries automatically. |
 | **This PC, CPU only** | a few seconds per sentence | Free and private, but slow on weak PCs. |
 
+**With an NVIDIA GPU, each utterance is recognised on its own.** A line often holds a short
+answer and the next question ("Orangensaft. – Und am Wochenende …?"). Given both at once,
+the Swiss German model tended to skip the short first one. Each line is now split at its
+pauses, and all its utterances are recognised in one batched pass (about the cost of one
+pass). Lines are also at most 10 s long on a fast PC, so subtitles stay closer to the speech.
+
+**Audio buffer (Windows):** the PC-audio capture now keeps half a second of buffer instead of
+one device period (~10 ms). Before, audio was lost whenever the app was briefly busy: words
+went missing and the status line showed a delay that kept growing. The delay shown is now
+measured by the clock, from the end of the speech to the finished subtitle.
+
 **Setting up Azure (5 minutes, free tier):**
 
 1. Sign in at [portal.azure.com](https://portal.azure.com) (a free account works).

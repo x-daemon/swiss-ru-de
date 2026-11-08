@@ -507,7 +507,9 @@ class App:
                                      self.status, options=self.options,
                                      segmenter=Segmenter(
                                          min_segment_s=self.tuning.min_segment_s if self.tuning else 3.0,
-                                         max_segment_s=15.0),
+                                         # fast PC: shorter lines, subtitles closer to the speech
+                                         max_segment_s=10.0 if self.tuning and
+                                         self.tuning.profile == "precise" else 15.0),
                                      dialect_transcriber=self.dialect_transcriber).start()
 
     def _restart_capture(self) -> None:

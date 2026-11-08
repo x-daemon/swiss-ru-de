@@ -273,3 +273,69 @@ def test_time_words_for_small_models():
     assert n("Wie lange braucht ihr zum Morgenessen?") == "Wie lange braucht ihr zum Frühstück?"
     assert n("Wie lange nehmen Sie sich Zeit, um morgen zu essen?") == \
         "Wie lange nehmen Sie sich Zeit, um zu frühstücken?"
+
+
+def tone(seconds, amp=0.3):
+    t = np.arange(int(seconds * 16000)) / 16000
+    return (amp * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+
+
+def quiet(seconds):
+    return np.full(int(seconds * 16000), 0.001, np.float32)
+
+
+def test_segments_are_split_into_utterances():
+    # short answer, pause, question, short breath, rest of the question
+    audio = np.concatenate([tone(1.0), quiet(0.6), tone(3.0), quiet(0.15), tone(2.0)])
+    clips = asr.utterance_clips(audio)
+    assert len(clips) == 2  # cut in the 0.6 s pause only
+    assert 1.0 * 16000 < clips[0][1] < 1.6 * 16000 and clips[1][1] == len(audio)
+    assert asr.utterance_clips(tone(1.2)) == [(0, len(tone(1.2)))]
+    yes = np.concatenate([tone(0.3), quiet(0.5), tone(3.0)])  # "Ja." alone is too short
+    assert len(asr.utterance_clips(yes)) == 1
+    many = np.concatenate([np.concatenate([tone(1.0), quiet(0.5)]) for _ in range(12)])
+    assert len(asr.utterance_clips(many)) == 8  # one batch at most
+
+
+def test_gpu_recognises_each_utterance_in_one_batch():
+    t = asr.Transcriber.__new__(asr.Transcriber)
+    t.hint, t.prompt, t.beam_size, t.log = None, None, 5, lambda m: None
+    t.split_utterances = True
+    seen = {}
+
+    def batched(audio, clip_timestamps, batch_size, **kw):
+        seen.update(clips=clip_timestamps, batch=batch_size, vad="vad_parameters" in kw)
+        return iter([SimpleNamespace(text=" Orangensaft.", no_speech_prob=0.1),
+                     SimpleNamespace(text=" Und am Wochenende?", no_speech_prob=0.1)]), None
+
+    t._batched = SimpleNamespace(transcribe=batched)
+    audio = np.concatenate([tone(1.0), quiet(0.6), tone(3.0)])
+    assert t.transcribe(audio) == "Orangensaft. Und am Wochenende?"
+    assert seen["batch"] == 2 and len(seen["clips"]) == 2 and not seen["vad"]
+
+    def broken(*a, **k):
+        raise TypeError("old faster-whisper")
+
+    t._batched = SimpleNamespace(transcribe=broken)
+    t.model = SimpleNamespace(transcribe=lambda audio, **kw: (
+        iter([SimpleNamespace(text=" Ganzer Satz.", no_speech_prob=0.1)]), None))
+    assert t.transcribe(audio) == "Ganzer Satz." and not t.split_utterances  # falls back
+
+
+def test_lag_is_measured_by_the_clock():
+    import time
+
+    from swiss_ru_de.pipeline import Line, Stats, TranslationWorker
+
+    stats = Stats()
+    worker = TranslationWorker(lambda t: FakeRu(), LineBook(), lambda m: None, stats=stats)
+    worker.origin = time.monotonic() - 500  # audio samples say: 470 s behind (lost audio)
+    line = Line(0, 0, 30.0, "Satz", heard_at=time.monotonic() - 3)
+    worker._check_speed(line, FakeRu())
+    assert 2.9 < stats.lag < 4  # the real delay
+
+
+def test_more_time_words():
+    n = normalize_swiss_terms
+    assert n("Dann geht es, ja, dreiviertel Stunde.") == "Dann geht es, ja, 45 Minuten."
+    assert n("eine super Sauce") == "eine toll Sauce"

@@ -76,9 +76,10 @@ SWISS_TERMS = [
     (r"merci", "danke"),
     (r"zäme", "zusammen"),
     # small translation models get these wrong ("Viertelstunde" -> "14 minutes")
-    (r"(?:eine |ne )?dreiviertelstunde", "45 Minuten"),
-    (r"(?:eine |ne )?viertelstunde", "15 Minuten"),
+    (r"(?:eine |ne )?drei ?viertel ?stunden?", "45 Minuten"),
+    (r"(?:eine |ne )?viertel ?stunden?", "15 Minuten"),
     (r"mega", "sehr"),
+    (r"super", "toll"),  # "eine super Sauce": great, not huge
     (r"uf widerluege|adieu", "auf Wiedersehen"),
 ]
 _SWISS_RE = [(re.compile(rf"\b(?:{k})\b", re.IGNORECASE), v) for k, v in SWISS_TERMS]

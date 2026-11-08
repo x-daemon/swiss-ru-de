@@ -41,6 +41,7 @@ class Line:
     dialect: str | None = None  # Swiss German as spoken, if the dialect model is on
     translation_pending: bool = True
     dialect_pending: bool = False
+    heard_at: float | None = None  # time.monotonic() when the speech had been heard (live)
 
     @property
     def done(self) -> bool:
@@ -95,9 +96,11 @@ class LineBook:
         self._next_id = 0
         self._lock = threading.Lock()
 
-    def new(self, start: float, end: float, german: str, target: str, dialect: bool) -> Line:
+    def new(self, start: float, end: float, german: str, target: str, dialect: bool,
+            heard_at: float | None = None) -> Line:
         with self._lock:
-            line = Line(self._next_id, start, end, german, target, dialect_pending=dialect)
+            line = Line(self._next_id, start, end, german, target, dialect_pending=dialect,
+                        heard_at=heard_at)
             self._next_id += 1
             self._lines[line.id] = line
             snap = replace(line)
@@ -182,7 +185,11 @@ class TranslationWorker:
 
     def _check_speed(self, line: Line, translator: Translator) -> None:
         """Tell the user when subtitles fall behind, and why."""
-        if self.origin is not None:
+        # from the end of the speech to the finished subtitle (by the clock, not by audio
+        # samples: those fall behind whenever audio is lost)
+        if getattr(line, "heard_at", None) is not None:
+            self.stats.lag = max(0.0, time.monotonic() - line.heard_at)
+        elif self.origin is not None:
             self.stats.lag = max(0.0, time.monotonic() - (self.origin + line.end))
         check = getattr(translator, "gpu_warning", None)
         warning = check() if callable(check) else None
@@ -239,7 +246,7 @@ def merge_segments(segments: list[Segment]) -> Segment:
         if i:
             parts.append(gap)
         parts.append(s.audio)
-    return Segment(segments[0].start, segments[-1].end, np.concatenate(parts))
+    return Segment(segments[0].start, segments[-1].end, np.concatenate(parts), segments[-1].heard_at)
 
 
 def _join(thread: threading.Thread, timeout: float) -> None:
@@ -303,6 +310,7 @@ class LivePipeline:
     # -- capture -----------------------------------------------------------------
     def _emit(self, audio: np.ndarray) -> None:
         for seg in self.segmenter.feed(audio):
+            seg.heard_at = time.monotonic()
             if not self.options.paused:
                 self.segments.put(seg)
 
@@ -362,7 +370,7 @@ class LivePipeline:
                     and not self._dialect_busy)
             line = process_segment(seg.start, seg.end, seg.audio, self.transcriber, None,
                                    self.book, self.worker, self.options.target, self.on_status,
-                                   dialect_later=want)
+                                   dialect_later=want, heard_at=seg.heard_at)
             if line is not None and want:
                 self._dialect_busy = True
                 self._dialect_jobs.put((line.id, seg.audio))
@@ -392,7 +400,7 @@ def transcribe_dialect(transcriber, audio, stats: Stats | None, on_status: OnSta
 
 def process_segment(start, end, audio, transcriber, dialect_transcriber, book, worker,
                     target, on_status, german: str | None = None,
-                    dialect_later: bool = False) -> Line | None:
+                    dialect_later: bool = False, heard_at: float | None = None) -> Line | None:
     """Standard German first (so translation can start), then the dialect line - here,
     or (``dialect_later``) by the caller."""
     stats = getattr(worker, "stats", None)
@@ -408,7 +416,7 @@ def process_segment(start, end, audio, transcriber, dialect_transcriber, book, w
     if not german:
         return None
     line = book.new(start, end, german, target,
-                    dialect=dialect_later or dialect_transcriber is not None)
+                    dialect=dialect_later or dialect_transcriber is not None, heard_at=heard_at)
     worker.put(line)
     if dialect_transcriber is not None:
         dialect = transcribe_dialect(dialect_transcriber, audio, stats, on_status)
