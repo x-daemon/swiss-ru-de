@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "swiss-ru-de"
-version = "1.1.5"
+version = "1.1.6"
 description = "Swiss German speech (PC audio, Teams, YouTube) to Russian or German text"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -13,6 +13,7 @@ keywords = ["swiss german", "schweizerdeutsch", "speech recognition", "whisper",
 dependencies = [
     "faster-whisper>=1.1",
     "numpy>=1.24",
+    "av>=11,<19",  # PyAV 19 dropped an option faster-whisper 1.2.1 uses: audio files fail to decode
     "soundcard>=0.4.4",
     "yt-dlp>=2024.1.1",
     "keyring>=24",
