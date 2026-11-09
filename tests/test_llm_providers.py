@@ -304,3 +304,10 @@ def test_translategemma_gets_its_prompt_and_no_dialect():
     assert prompt.startswith("You are a professional German (de) to Russian (ru) translator")
     assert prompt.endswith("Zwei Croissants und ein Kaffee.") and "Zwöi" not in prompt
     assert not t.uses_dialect and fake.calls[0]["temperature"] == 0.0
+
+
+def test_offered_alternatives_are_cut():
+    c = translate.clean_translation
+    assert c("Что случилось? / Что такое?", "Was denn?") == "Что случилось?"
+    assert c("Я этого не делаю. Почему? / Зачем?", "x" * 40) == "Я этого не делаю. Почему?"
+    assert c("Счёт 2 / 3 в нашу пользу.", "x" * 20) == "Счёт 2 / 3 в нашу пользу."  # not an alternative

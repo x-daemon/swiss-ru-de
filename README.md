@@ -226,6 +226,10 @@ Notes:
   4B fits next to the speech models. `gemma3:4b` mistranslated and invented words ("с
   ишахой"). TranslateGemma gets its own prompt format and only the recognised German (Swiss
   words normalised). Local models now answer with temperature 0, the most likely translation.
+* **Before translating, dialect words** that the speech model left in its Standard German are
+  replaced: *nöd, nüt, öppis, hüt, gsi, gha, isch, chönnt, Käs* and more. Translation models
+  know no Swiss German. If TranslateGemma offers alternatives ("Что случилось? / Что
+  такое?"), only the first is kept.
 * **Translation-only models** such as `translategemma:12b` get a plain translation prompt. They
   don't correct recognition errors.
 
