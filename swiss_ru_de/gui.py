@@ -356,6 +356,8 @@ class App:
             from .asr import dialect_prompt
 
             self.dialect_transcriber.prompt = dialect_prompt(new.dialect)
+            if getattr(self.dialect_transcriber, "_recent_dialect", None):
+                self.dialect_transcriber._recent_dialect.clear()  # other dialect, other style
         if self.options.dialect and self.dialect_transcriber is None and self.transcriber:
             threading.Thread(target=self._load_dialect, daemon=True).start()
         self.root.attributes("-topmost", new.always_on_top)

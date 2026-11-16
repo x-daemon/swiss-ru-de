@@ -116,6 +116,14 @@ an approximation of what was said. The bottom line (meaning, translation) comes 
 German model. On CPU-only PCs, the second model roughly doubles the work. If the PC can't keep
 up, set the top part to *Standard German*.
 
+Whisper was trained to write Swiss German speech as Standard German, so the example text alone
+often lost: many top lines came out in Standard German. Since 1.1.8 the example text is longer,
+and the model also remembers the last two lines it wrote in dialect and gets them as its
+"previous text". Whisper continues the style of the text before it, so one dialect line makes
+the next more likely to be dialect too. Lines it writes in Standard German are not remembered.
+Some lines will still come out in Standard German. No public speech model reliably writes Swiss
+German as spoken: the Swiss German fine-tunes are all trained to write Standard German.
+
 ## Command line
 
 ```bash

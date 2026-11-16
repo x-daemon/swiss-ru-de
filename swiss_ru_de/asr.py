@@ -6,6 +6,7 @@ import os
 import re
 import sys
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Callable, Iterator
 
@@ -57,32 +58,64 @@ def _echoes_prompt(text: str, prompt: str) -> bool:
 # German is not standardised, so the output is an approximation of what was said.
 DIALECT_PROMPTS = {
     "auto": "Grüezi mitenand. Hüt isch es schöns Wätter, mir gönd am Namittag no chli go "
-            "laufe. Weisch, das han i nöd gwüsst.",
+            "laufe. Weisch, das han i nöd gwüsst. "
+            "Ich ha gseit, mir chömed morn wieder, wenn's dir passt. Das isch würkli nöd so schlimm gsi.",
     "zurich": "Grüezi mitenand. Hüt isch es schöns Wätter, mir gönd am Namittag no chli go "
-              "laufe. Weisch, das han i nöd gwüsst.",
+              "laufe. Weisch, das han i nöd gwüsst. "
+              "Ich ha gseit, mir chömed morn wieder, wenn's dir passt. Das isch würkli nöd so schlimm gsi.",
     "bern": "Grüessech mitenand. Hüt isch es schöns Wätter, mir göh am Namittag no chli ga "
-            "loufe. Weisch, das hani nid gwüsst.",
+            "loufe. Weisch, das hani nid gwüsst. "
+            "I ha gseit, mir chöme morn wieder, we's dir passt. Das isch würklech nid so schlimm gsi.",
     "berner-oberland": "Grüessech zäme. Hiitu ischt es schöns Wätter, mier gange am Namittag "
-                       "no chli ga loufe. Weischt, das han i nid gwisst.",
+                       "no chli ga loufe. Weischt, das han i nid gwisst. "
+                       "I ha gseit, mier chöme morn wider, wes dier passt. Das ischt würklech nid so schlimm gsi.",
     "basel": "Grüezi mitenand. Hüt isch e scheens Wätter, mir gönge am Nomidaag no e bitz go "
-             "spaziere. Waisch, das hani nit gwüsst.",
+             "spaziere. Waisch, das hani nit gwüsst. "
+             "Ich ha gsait, mir kömme morn wider, wenn's dr passt. Das isch würgglig nit so schlimm gsi.",
     "wallis": "Grüessu zäme. Hiitu ischt schens Wätter, wier gän am Namittag no as bitzji ga "
-              "loufu. Weischt, das hani nit gwisst.",
+              "loufu. Weischt, das hani nit gwisst. "
+              "Ich hä gseit, wier chämu morn wider, wenn's dier passt. Das ischt wirklich nit so schlimm gsi.",
     "luzern": "Grüezi mitenand. Hött esch es schöns Wätter, mer gönd am Nomittag no chli go "
-              "laufe. Wäisch, das hani ned gwüsst.",
+              "laufe. Wäisch, das hani ned gwüsst. "
+              "Ech ha gseit, mer chömed morn wieder, wenn's der passt. Das esch würklech ned so schlemm gsi.",
     "ostschweiz": "Grüezi mitenand. Hüt isch es schöös Wetter, mir gönd am Namittag no chli go "
-                  "laufe. Weisch, da han i nöd gwüsst.",
+                  "laufe. Weisch, da han i nöd gwüsst. "
+                  "I ha gseit, mir chömed morn wieder, wenn's dir passt. Da isch würkli nöd so schlimm gsi.",
     "graubuenden": "Grüezi mitanand. Hüt isch as schöns Wätter, miar gönd am Namitag no a bitz "
-                   "go laufa. Weisch, das han i nid gwüsst.",
+                   "go laufa. Weisch, das han i nid gwüsst. "
+                   "I han gseit, miar kömmand morn wieder, wenn's dir passt. Das isch würkli nid so schlimm gsi.",
     "aargau": "Grüezi mitenand. Hüt isch es schöns Wätter, mer gönd am Namittag no chli go "
-              "laufe. Weisch, das hani ned gwüsst.",
+              "laufe. Weisch, das hani ned gwüsst. "
+              "Ich ha gseit, mer chömed morn wieder, wenn's der passt. Das isch würklich ned so schlimm gsi.",
     "solothurn": "Grüessech mitenand. Hüt isch es schöns Wätter, mir göi am Namittag no chli go "
-                 "laufe. Weisch, das hani nid gwüsst.",
+                 "laufe. Weisch, das hani nid gwüsst. "
+                 "I ha gseit, mir chöme morn wieder, wenn's der passt. Das isch würklech nid so schlimm gsi.",
 }
 
 
 def dialect_prompt(dialect: str | None) -> str:
     return DIALECT_PROMPTS.get(dialect or "auto", DIALECT_PROMPTS["auto"])
+
+
+# Words that occur in Swiss German but not in Standard German writing.
+_DIALECT_WORDS = {
+    "isch", "ischt", "esch", "nöd", "nid", "ned", "nit", "hüt", "hiitu", "hött", "gsi", "gha",
+    "öppis", "öppe", "chli", "chlii", "gönd", "göh", "gömmer", "han", "hani", "weisch",
+    "weischt", "waisch", "nüt", "nüüt", "nüd", "nüüd", "scho", "gseit", "gsait", "chöme",
+    "chömed", "chunnt", "chunsch", "chasch", "chönd", "chönnt", "wotsch", "wott", "zmorge",
+    "zmittag", "znacht", "gäll", "bisch", "hesch", "häsch", "hend", "händ", "gits", "emol",
+    "eifach", "würkli", "würklech", "lueg", "luege", "mached", "gange", "gaht", "goht",
+    "simmer", "mier", "miar", "wier", "ech", "isse", "ässe", "gässe", "poschte",
+    "grüezi", "grüessech", "merci", "tschüss", "uf", "d'", "dä", "dr", "es", "en", "e",
+}
+_COMMON_STANDARD = {"es", "en", "e", "uf", "merci", "tschüss", "d'", "dr"}  # weak hints only
+
+
+def looks_dialectal(text: str) -> bool:
+    """Is this written in Swiss German (as opposed to Standard German)?"""
+    words = re.findall(r"[a-zäöüéèàâ']+", text.lower())
+    strong = sum(w in _DIALECT_WORDS and w not in _COMMON_STANDARD for w in words)
+    return strong >= 2 or (strong == 1 and len(words) <= 6)
 
 
 @dataclass
@@ -292,6 +325,7 @@ class Transcriber:
         # full pass, so there the segment is recognised as a whole.
         self.split_utterances = self.device == "cuda"
         self._batched = None
+        self._recent_dialect: deque[str] = deque(maxlen=2)
         log(f"Speech model ready on {self.device.upper()} ({self.pass_seconds:.1f} s per pass).")
 
     def _options(self, beam_size: int, live: bool = False) -> dict:
@@ -311,8 +345,23 @@ class Transcriber:
             log_prob_threshold=-1.0,
             compression_ratio_threshold=2.4,
             hotwords=self.hint,
-            initial_prompt=self.prompt,
+            initial_prompt=self.initial_prompt(),
         )
+
+    def initial_prompt(self) -> str | None:
+        """The style prompt, plus the last lines this dialect transcriber wrote in dialect:
+        Whisper continues the style of the text before it, so dialect keeps it in dialect
+        instead of drifting back to Standard German."""
+        if not self.prompt:
+            return None
+        recent = getattr(self, "_recent_dialect", None) or ()
+        return " ".join([self.prompt, *recent])
+
+    def remember_style(self, text: str) -> None:
+        if self.prompt and text and looks_dialectal(text):
+            if getattr(self, "_recent_dialect", None) is None:
+                self._recent_dialect = deque(maxlen=2)
+            self._recent_dialect.append(text[-200:])
 
     def transcribe(self, audio: np.ndarray) -> str:
         """Transcribe one short utterance (live mode)."""
@@ -330,9 +379,19 @@ class Transcriber:
             )
         parts = [clean_text(s.text) for s in segments if s.no_speech_prob < 0.8]
         text = clean_text(" ".join(p for p in parts if not is_hallucination(p)))
-        if is_hallucination(text) or (self.prompt and _echoes_prompt(text, self.prompt)):
+        if is_hallucination(text) or self._echoes(text):
             return ""
+        self.remember_style(text)
         return text
+
+    def _echoes(self, text: str) -> bool:
+        """On silence Whisper sometimes repeats its prompt. Short repeats of a remembered
+        line are kept: people do say "Nur Wasser." twice."""
+        if not self.prompt:
+            return False
+        recent = " ".join(getattr(self, "_recent_dialect", None) or ())
+        return _echoes_prompt(text, self.prompt) or (
+            len(text) >= 25 and bool(recent) and _echoes_prompt(text, recent))
 
     def _transcribe_clips(self, audio: np.ndarray, clips: list[tuple[int, int]]) -> list:
         if self._batched is None:

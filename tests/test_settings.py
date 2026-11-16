@@ -71,3 +71,43 @@ def test_translator_hub_caches_and_reconfigures(monkeypatch):
     hub.get("ru")
     assert made[-1] == ("claude", "wallis")
     assert isinstance(hub.get("de"), Passthrough) and len(made) == 2
+
+
+def test_dialect_or_standard_german():
+    from swiss_ru_de.asr import looks_dialectal
+
+    assert looks_dialectal("Eben, speziale Diät. Isch angeseit. Nüüd. Warum nöd?")
+    assert looks_dialectal("Oda chönnt siin, Philipp. Etwas Käs noch, gäll.")
+    assert looks_dialectal("Hesch Hunger?")
+    assert not looks_dialectal("Was haben Sie heute zum Morgen gehabt? Eben Kaffee.")
+    assert not looks_dialectal("Ich trinke es mit Milch, merci.")
+
+
+def test_dialect_line_remembers_its_dialect_style():
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    answers = iter([" Hüt isch es schöns Wätter gsi, gäll.", " Das ist schön.",
+                    " Mir gönd morn uf de Uetliberg.", " Nur Wasser."])
+    prompts = []
+
+    def transcribe(audio, **kw):
+        prompts.append(kw["initial_prompt"])
+        return iter([SimpleNamespace(text=next(answers), no_speech_prob=0.1)]), None
+
+    t = Transcriber.__new__(Transcriber)
+    t.hint, t.beam_size, t.prompt = None, 1, dialect_prompt("zurich")
+    t.model = SimpleNamespace(transcribe=transcribe)
+    audio = np.zeros(16000, np.float32)
+    assert t.transcribe(audio) == "Hüt isch es schöns Wätter gsi, gäll."
+    assert t.transcribe(audio) == "Das ist schön."  # Standard German: not remembered
+    t.transcribe(audio)
+    t.transcribe(audio)
+    assert prompts[0] == dialect_prompt("zurich")
+    assert prompts[1].endswith("Hüt isch es schöns Wätter gsi, gäll.")
+    assert "Das ist schön" not in prompts[2] and "Uetliberg" in prompts[3]
+    assert t.transcribe.__self__ is t  # the main (Swiss) model has no prompt: nothing changes
+    plain = Transcriber.__new__(Transcriber)
+    plain.prompt = None
+    assert plain.initial_prompt() is None
